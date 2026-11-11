@@ -10,7 +10,7 @@ interface Marker {
   enabled: boolean;
 }
 
-/** Only sources whose location is known (restored ones have no spec). */
+/** Only sources whose location is known (a restored source whose meta carried no placement has none). */
 export function userSourceMarkers(sources: readonly UserSource[]): Marker[] {
   return sources
     .filter((s) => s.spec)

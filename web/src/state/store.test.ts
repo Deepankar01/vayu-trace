@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Meta, RunStatus } from "../api/types";
 import { frameBytes } from "../test-utils/frames";
 import { makeMeta } from "../test-utils/meta";
-import { createAppStore, REBUILD_LOOP, REFRESH_NOTICE, RUN_LOST } from "./store";
+import { useDropStore } from "../map/dropStore";
+import { initialHour } from "../panels/initialHour";
+import { createAppStore, REBUILD_LOOP, REFRESH_NOTICE, REFRESH_NOTICE_DIALOG, REFRESH_NOTICE_SOURCES, RUN_LOST, remapHour } from "./store";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -37,7 +39,7 @@ function readyServer(meta: () => Meta = () => makeMeta(), extra?: Handler): Hand
     if (u === `${RUN}/meta`) return json(meta());
     if (u.startsWith(`${RUN}/fires`)) return json([[77, 29, 12.5, 3]]);
     if (u.startsWith(`${RUN}/frames/`)) return frame();
-    if (u.includes("/measured")) return json({ values: [1, 2], station_count: 3, live: 9, live_error: null, source: "s", aligned: "a" });
+    if (u.includes("/measured")) return json({ values: [1, 2], station_count: 3, source: "s", aligned: "a" });
     if (u.includes("/cams")) return json({ values: [4, 5] });
     return undefined;
   };
@@ -225,7 +227,7 @@ describe("frames, builds and 409", () => {
     expect(statusPolls).toBe(2);
     expect(h.get().meta?.build_id).toBe("b9");
     expect(h.get().userSources).toEqual([]);
-    expect(h.get().notice).toBe(REFRESH_NOTICE);
+    expect(h.get().notice).toBe(REFRESH_NOTICE_SOURCES);
     h.get().clearNotice();
     expect(h.get().notice).toBeNull();
   });
@@ -247,7 +249,7 @@ describe("selectCity: measured and CAMS", () => {
     expect(h.get().measured.delhi.status).toBe("loading");
     expect(h.get().cams.delhi.status).toBe("loading");
     await flush();
-    expect(h.get().measured.delhi).toEqual({ status: "ready", values: [1, 2], stationCount: 3, live: 9, liveError: null, error: null });
+    expect(h.get().measured.delhi).toEqual({ status: "ready", values: [1, 2], stationCount: 3, error: null });
     expect(h.get().cams.delhi).toMatchObject({ status: "ready", values: [4, 5] });
     expect(h.calls).toContain(`GET ${RUN}/cities/delhi/measured?build=b1`);
     h.get().selectCity("ludhiana");
@@ -277,7 +279,7 @@ describe("selectCity: measured and CAMS", () => {
     let release!: () => void;
     const h = harness(
       readyServer(() => makeMeta(), (u) => {
-        if (u.includes("delhi/measured")) return new Promise((r) => (release = () => r(json({ values: [9], station_count: 1, live: null, live_error: null, source: "", aligned: "" }))));
+        if (u.includes("delhi/measured")) return new Promise((r) => (release = () => r(json({ values: [9], station_count: 1, source: "", aligned: "" }))));
         return undefined;
       }),
     );
@@ -473,12 +475,71 @@ describe("added sources", () => {
   });
 });
 
-it("restores user sources listed in meta, enabled", async () => {
+it("restores user sources listed in meta, enabled, with the placement the server stored", async () => {
   const meta = makeMeta();
-  meta.tags = [...meta.tags, { id: "user_1", kind: "user", sector: null, region: null, label: "Old", color: "#999" }];
+  const source = { kind: "brick_kiln", lon: 77.1, lat: 28.4, amount: 2, start_hour: 3, duration_h: 6 };
+  meta.tags = [
+    ...meta.tags,
+    { id: "user_1", kind: "user", sector: null, region: null, label: "Old", color: "#999", source },
+    { id: "user_2", kind: "user", sector: null, region: null, label: "Bare", color: "#999" },
+  ];
   const h = harness(readyServer(() => meta));
   await h.get().startRun("2026-11-10");
-  expect(h.get().userSources).toEqual([{ id: "user_1", label: "Old", color: "#999", enabled: true, spec: null }]);
+  expect(h.get().userSources).toEqual([
+    { id: "user_1", label: "Old", color: "#999", enabled: true, spec: source },
+    { id: "user_2", label: "Bare", color: "#999", enabled: true, spec: null },
+  ]);
+});
+
+describe("rebuild moves the window (today's run after UTC midnight)", () => {
+  /** b1 starts 2026-11-10 00Z; b2 starts a day later. */
+  const shifted = (build: string, startDay: number) => {
+    const m = makeMeta({ build_id: build, hours: 48 });
+    m.hours = m.hours.map((_, h) => new Date(Date.UTC(2026, 10, startDay, h)).toISOString());
+    return m;
+  };
+
+  it("remapHour keeps the instant and fraction, else falls back to the initial hour", () => {
+    const b1 = shifted("b1", 10);
+    const b2 = shifted("b2", 11);
+    expect(remapHour(b1.hours, 30.25, b2)).toBe(6.25);
+    expect(remapHour(b1.hours, 3, b2)).toBe(initialHour(b2)); // 11-10 03Z is not in b2's window
+    expect(remapHour(undefined, 3, b2)).toBe(initialHour(b2));
+  });
+
+  it("resets measured and CAMS, refetches the selected city, keeps the playhead's instant and closes the drop dialog", async () => {
+    let meta = shifted("b1", 10);
+    let measuredCalls = 0;
+    let rebuilt = false;
+    const h = harness(
+      readyServer(() => meta, (u) => {
+        if (u.includes("/measured")) {
+          measuredCalls++;
+          return json({ values: rebuilt ? [7] : [1], station_count: 1, source: "s", aligned: "a" });
+        }
+        if (u.includes("/frames/") && u.includes("build=b1") && h.get().hour >= 30 && !rebuilt) {
+          rebuilt = true;
+          meta = shifted("b2", 11);
+          return json({ detail: "run was rebuilt", build_id: "b2" }, 409);
+        }
+        return undefined;
+      }),
+    );
+    await h.get().startRun("2026-11-10");
+    h.get().selectCity("delhi");
+    await flush();
+    expect(h.get().measured.delhi.values).toEqual([1]);
+    useDropStore.getState().place({ lon: 77, lat: 28, x: 10, y: 10 });
+    h.get().setHour(30.5); // 2026-11-11 06:30Z
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.get().meta?.build_id).toBe("b2");
+    expect(h.get().hour).toBe(6.5); // same instant in the new window, not index 30
+    expect(measuredCalls).toBe(2);
+    expect(h.get().measured.delhi.values).toEqual([7]);
+    expect(h.calls).toContain(`GET ${RUN}/cities/delhi/measured?build=b2`);
+    expect(useDropStore.getState().pending).toBeNull();
+    expect(h.get().notice).toBe(REFRESH_NOTICE + REFRESH_NOTICE_DIALOG);
+  });
 });
 
 const R2 = "/api/runs/2026-11-11";

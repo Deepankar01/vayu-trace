@@ -285,6 +285,7 @@ export class MapScene {
   private updatePath(s: AppState, meta: Meta, x: number, env: SceneEnv): boolean {
     if (meta.build_id !== this.pathBuild) {
       this.pathBuild = meta.build_id;
+      this.pathAbort?.abort(); // an answer for the old build must not be drawn
       this.pathLast = null;
       this.pathPoints = null;
       this.pathVersion++;

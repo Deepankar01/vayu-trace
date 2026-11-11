@@ -11,6 +11,8 @@ import { HAZE } from "../api/decode";
 import { FrameCache } from "../api/frameCache";
 import type { Fire, Meta, Sector, SourceRequest } from "../api/types";
 import type { Weights } from "../lib/compose";
+import { useDropStore } from "../map/dropStore";
+import { initialHour } from "../panels/initialHour";
 import {
   DEFAULT_SLIDERS, FIRE_SCALING_RANGE, NO_SCENARIO, SLIDER_RANGE, createWeightSelectors, isFireAssumedHour,
   isForecastHour, type RegionScenario, type Sliders,
@@ -20,7 +22,9 @@ export type RunPhase = "idle" | "running" | "loading" | "ready" | "error";
 export type Speed = 1 | 2 | 4 | 8;
 export const SPEEDS: readonly Speed[] = [1, 2, 4, 8];
 export const POLL_INTERVAL_MS = 1000;
-export const REFRESH_NOTICE = "Run refreshed; added sources were removed";
+export const REFRESH_NOTICE = "Run refreshed";
+export const REFRESH_NOTICE_SOURCES = "Run refreshed; added sources were removed";
+export const REFRESH_NOTICE_DIALOG = "; the add-source dialog was closed";
 export const MAX_AUTO_REBUILDS = 2;
 export const REBUILD_LOOP = "The run keeps being rebuilt on the server; start the run again.";
 export const RUN_LOST = "run not found; start again";
@@ -38,7 +42,8 @@ export interface UserSource {
   label: string;
   color: string;
   enabled: boolean;
-  /** What the user asked for; null for sources restored from the server's meta. */
+  /** Where and when the source is: what the user asked for, or for sources restored after a
+   *  reload what the server stored (null only if the server sent none). */
   spec: SourceRequest | null;
 }
 
@@ -47,14 +52,24 @@ export interface CityDataState {
   status: "idle" | "loading" | "ready" | "error";
   values: (number | null)[] | null;
   stationCount: number | null;
-  live: number | null;
-  liveError: string | null;
   error: string | null;
 }
 
 export const IDLE_CITY_DATA: CityDataState = {
-  status: "idle", values: null, stationCount: null, live: null, liveError: null, error: null,
+  status: "idle", values: null, stationCount: null, error: null,
 };
+
+/**
+ * The playhead for a new build of the same date: the same instant (`hours[floor(h)]`, keeping the
+ * fraction) if the new window has it, else the initial-hour rule. A "today" window moves by a day
+ * at UTC midnight, so keeping the index would silently jump a day.
+ */
+export function remapHour(oldHours: readonly string[] | undefined, h: number, meta: Meta): number {
+  const i = Math.floor(h);
+  const instant = oldHours?.[i];
+  const at = instant === undefined ? -1 : meta.hours.findIndex((t) => Date.parse(t) === Date.parse(instant));
+  return at >= 0 ? at + (h - i) : initialHour(meta);
+}
 
 export interface AppState {
   runId: string | null;
@@ -172,7 +187,7 @@ export function createAppStore(deps: StoreDeps = {}) {
         .filter((t) => t.kind === "user")
         .map((t) => {
           const old = previous.find((u) => u.id === t.id);
-          return { id: t.id, label: t.label, color: t.color, enabled: old?.enabled ?? true, spec: old?.spec ?? null };
+          return { id: t.id, label: t.label, color: t.color, enabled: old?.enabled ?? true, spec: old?.spec ?? t.source ?? null };
         });
 
     /** Install a meta: user sources, playhead clamp, frame window. */
@@ -238,9 +253,21 @@ export function createAppStore(deps: StoreDeps = {}) {
               }
             }
             const meta = checked(await client.getMeta(runId, signal));
+            // the old build's per-city data and in-flight requests belong to the old window
+            abortCity();
+            const old = get();
+            const hadSources = old.userSources.length > 0;
+            set({ hour: remapHour(old.meta?.hours, old.hour, meta), measured: {}, cams: {} });
             applyMeta(meta, false);
-            set({ status: "ready", notice: REFRESH_NOTICE, fires: null });
+            // a pending drop dialog's start hour indexes the old window: close it
+            const drop = useDropStore.getState();
+            const hadDialog = drop.pending !== null || drop.armedForDrop;
+            if (hadDialog) useDropStore.setState({ pending: null, armedForDrop: false, busy: false });
+            const notice = (hadSources ? REFRESH_NOTICE_SOURCES : REFRESH_NOTICE) + (hadDialog ? REFRESH_NOTICE_DIALOG : "");
+            set({ status: "ready", notice, fires: null });
             loadFires(token, runId, signal);
+            const city = get().selectedCity;
+            if (city) fetchCityData(city);
           } catch (e) {
             if (!stale(token) && !isAbort(e)) set({ status: "error", error: errorMessage(e) });
             throw e;
@@ -337,10 +364,7 @@ export function createAppStore(deps: StoreDeps = {}) {
         client.getMeasured(runId, id, controller.signal).then(
           (r) =>
             live() &&
-            setCityData("measured", id, {
-              status: "ready", values: r.values, stationCount: r.station_count, live: r.live,
-              liveError: r.live_error, error: null,
-            }),
+            setCityData("measured", id, { status: "ready", values: r.values, stationCount: r.station_count, error: null }),
           (e) => live() && setCityData("measured", id, { ...IDLE_CITY_DATA, status: "error", error: errorMessage(e) }),
         );
       }
@@ -452,7 +476,7 @@ export function createAppStore(deps: StoreDeps = {}) {
             return series && !series.every((v) => v === 0) ? { ...c, by_tag: { ...c.by_tag, [id]: series } } : c;
           });
           set((s) => ({
-            meta: { ...meta, cities, tags: [...meta.tags, { id, kind: "user", sector: null, region: null, label, color }] },
+            meta: { ...meta, cities, tags: [...meta.tags, { id, kind: "user", sector: null, region: null, label, color, source: req }] },
             userSources: [...s.userSources, { id, label, color, enabled: true, spec: req }],
           }));
           frames.setExtras(enabledUserTags());

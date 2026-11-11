@@ -10,6 +10,8 @@ export interface TagMeta {
   region: string | null;
   label: string;
   color: string;
+  /** User sources only: where and when it was placed (stored by the server, restored on reload). */
+  source?: SourceRequest;
 }
 
 /** Hourly series for the city. `wind_dir_deg` null means calm; `rh` is a FRACTION 0..1. */
@@ -93,8 +95,6 @@ export interface WindField {
 export interface MeasuredResponse {
   values: (number | null)[];
   station_count: number;
-  live: number | null;
-  live_error: string | null;
   source: string;
   aligned: string;
 }
