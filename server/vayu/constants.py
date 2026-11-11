@@ -70,36 +70,36 @@ FIRE_PROFILE_FLOOR = 0.05
 
 # --- Particle transport (vayu.sim.particles) ---
 
-# Model time step, s. Design choice: 600 s keeps the advective move (u * DT ~ 3-6 km at typical
-# 5-10 m/s) below one 0.1 degree (~11 km) grid cell, so terrain blocking sees every cell crossed.
+# Model time step, s. Design choice, not fitted. Terrain blocking (vayu.sim.particles.step) checks
+# the midpoint and the destination cell of every move, so a move up to two 0.1 degree cells long
+# (~20 km; ~35 m/s at this step) cannot cross a ridge without touching it. A ridge one cell wide
+# can still be jumped by a single step longer than two cells (wind plus turbulent displacement).
 DT_S = 600
 
-# Horizontal eddy diffusivity, m^2/s, for the random-walk term of the particle move. Horizontal
-# mixing at mesoscale (10-100 km) is commonly quoted as of order 1e3-1e4 m^2/s (Seinfeld & Pandis,
-# Atmospheric Chemistry and Physics, 3rd ed. 2016, ch. 18 on turbulent dispersion; HYSPLIT's
-# deformation-based horizontal diffusivity, Draxler & Hess 1998, Aust. Meteorol. Mag. 47, 295-308,
-# gives values of this order on mesoscale grids). 3000 is a chosen value inside that range, not
-# fitted.
+# Horizontal eddy diffusivity, m^2/s, for the random-walk term of the particle move.
+# Order-of-magnitude design choice for mesoscale horizontal dispersion, where values of
+# 1e3-1e4 m^2/s are commonly used; that range is quoted from general knowledge and has not been
+# re-verified against a primary source here. Not fitted. See also Draxler & Hess 1998,
+# Aust. Meteorol. Mag. 47, 295-308 (HYSPLIT description).
 K_H_M2_S = 3000
 
-# Dry deposition velocity of PM2.5, m/s. Accumulation-mode particles deposit at typically
-# 0.1-0.5 cm/s over vegetated and rough land surfaces (Seinfeld & Pandis 2016 ch. 19, dry
-# deposition; Zhang et al. 2001, Atmos. Environ. 35, 549-560, size-segregated particle dry
-# deposition scheme). 0.2 cm/s is a chosen value inside that range, not fitted.
+# Dry deposition velocity of PM2.5, m/s. 0.2 cm/s is a chosen value for PM2.5 over rough land.
+# Published accumulation-mode deposition velocities span roughly 0.01-0.5 cm/s (Zhang et al. 2001,
+# Atmos. Environ. 35, 549-560; Seinfeld & Pandis, Atmospheric Chemistry and Physics); that range is
+# not re-verified here. Not fitted.
 V_DEP_M_S = 0.002
 
 # Below-cloud scavenging (washout) coefficient for particles, Lambda = WASHOUT_A * P**WASHOUT_B
-# (1/s, P = precipitation rate in mm/h). This power-law form is the one used for particles in
-# Lagrangian models of the FLEXPART/HYSPLIT family (Stohl et al. 2005, Atmos. Chem. Phys. 5,
-# 2461-2474, FLEXPART 6.2 technical note; Seinfeld & Pandis 2016 ch. 20, below-cloud scavenging).
-# The exact pair (8.4e-5, 0.79) is taken as specified for this project; it is of the same order as
-# the A ~ 1e-4 1/s, B ~ 0.8 defaults of FLEXPART, but the pair itself has not been re-verified
-# against a primary source. Not fitted.
+# (1/s, P = precipitation rate in mm/h): the Lambda = A * P**B form used in FLEXPART (Stohl et al.
+# 2005, Atmos. Chem. Phys. 5, 2461-2474). The exact pair (8.4e-5, 0.79) is taken as specified for
+# this project; from memory it is of the same order as FLEXPART's A ~ 1e-4 1/s, B ~ 0.8, but the
+# pair itself has not been verified against a primary source. Not fitted.
 WASHOUT_A = 8.4e-5
 WASHOUT_B = 0.79
 
-# Time constant, s, with which a parcel's height relaxes toward terrain + half the mixing-layer
-# height. Design choice (6 h, a fraction of a diurnal cycle), not taken from the literature and
-# not fitted: slow enough that a parcel keeps its altitude against a steep wall, fast enough to
-# follow gentle slopes.
+# Time constant, s, with which a parcel's height z_m relaxes toward terrain + half the mixed-layer
+# height. Design choice (6 h), not from the literature and not fitted. Consequence: on rising
+# terrain z_m lags the target by about slope * u * Z_RELAX_S, and a parcel is held back (blocked
+# until z_m catches up) once that lag exceeds roughly the mixed-layer depth. Shallow night layers
+# therefore block upslope flow; deep daytime layers do not. Steep walls block in either case.
 Z_RELAX_S = 21600

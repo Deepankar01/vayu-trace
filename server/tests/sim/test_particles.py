@@ -78,12 +78,13 @@ def north_m(dlat):
 # --- brief tests ---------------------------------------------------------------------------
 
 
-def test_uniform_wind_distance(monkeypatch):
+@pytest.mark.parametrize("lat", [22.0, 37.0])  # 37 N: cos(lat) ~ 0.80
+def test_uniform_wind_distance(monkeypatch, lat):
     monkeypatch.setattr(particles, "K_H_M2_S", 0.0)
-    p0 = make(np.linspace(75, 80, 50), 22.0)
+    p0 = make(np.linspace(75, 80, 50), lat)
     p, _ = run(p0, StubMet(u=5.0), flat(), hours=1)
     assert len(p) == 50
-    dx = east_m(p.lon - p0.lon, 22.0)
+    dx = east_m(p.lon - p0.lon, lat)
     assert dx.mean() == pytest.approx(18_000, rel=0.01)
     assert np.abs(p.lat - p0.lat).max() < 1e-9
 
@@ -119,16 +120,34 @@ def test_wall_blocks():
     assert p.lon.mean() > 81.5  # they did reach and pile up against the wall
 
 
-def test_gentle_slope_passes():
-    # 1,000 m rise over 500 km (~4.8 degrees of longitude at 22 N), flat at the top.
+RAMP_START = 72.0
+
+
+def ramp():
+    """1,000 m rise over 500 km (~4.8 degrees of longitude at 22 N), flat at the top."""
     lon_c = LON_MIN + (np.arange(NX) + 0.5) * CELL
-    ramp_start, ramp_len_deg = 72.0, 500e3 / east_m(1.0, 22.0)
-    ramp_end = ramp_start + ramp_len_deg
-    rise = np.clip((lon_c - ramp_start) / ramp_len_deg, 0, 1) * 1000.0
-    elev = np.broadcast_to(rise, (NY, NX)).astype(np.float32)
+    ramp_len_deg = 500e3 / east_m(1.0, 22.0)
+    rise = np.clip((lon_c - RAMP_START) / ramp_len_deg, 0, 1) * 1000.0
+    return np.broadcast_to(rise, (NY, NX)).astype(np.float32), RAMP_START + ramp_len_deg
+
+
+def test_gentle_slope_passes():
+    elev, ramp_end = ramp()
     p, _ = run(make(np.full(500, 71.0), 22.0), StubMet(u=5.0), elev, hours=48)
     assert len(p) == 500
     assert p.lon.min() > ramp_end
+
+
+def test_gentle_slope_holds_back_shallow_night_layer():
+    # blh 100 m: z_m lags the slope by ~slope*u*Z_RELAX_S = 0.002*5*21600 = 216 m, more than the
+    # mixed-layer depth, so the parcel is repeatedly held until z_m catches up. It creeps up the
+    # slope (held back, not lost) instead of crossing it like the 500 m layer above.
+    elev, ramp_end = ramp()
+    p, s = run(make(np.full(500, 71.0), 22.0, z=50.0), StubMet(u=5.0, blh=100.0), elev, hours=48)
+    assert len(p) == 500
+    assert sum(x.left_domain + x.depleted + x.missing_met for x in s) == 0
+    assert p.lon.mean() > RAMP_START + 0.5  # it does climb
+    assert p.lon.max() < ramp_end  # but nowhere near as far as 5 m/s for 48 h would take it
 
 
 def test_diffusion_variance():
@@ -273,3 +292,30 @@ def test_particles_helpers():
     np.testing.assert_array_equal(k.lat, [20.0, 21.0])
     assert k.tag.dtype == np.int16 and k.lon.dtype == np.float64
     assert len(Particles.concat([])) == 0
+
+
+def test_diagonal_one_cell_ridge_is_not_cut(monkeypatch):
+    # Ridge cells where ix - iy == c run south-west to north-east; wind blows toward the
+    # north-west, straight across it. Without the corner rule parcels slip between the diagonal
+    # cells.
+    iy, ix = np.indices((NY, NX))
+    c = col(80.0) - row(22.0)
+    elev = flat()
+    elev[ix - iy == c] = 4000.0
+    p0 = make(np.full(1000, 80.55), 21.55)
+    side = lambda p: (np.floor((p.lon - LON_MIN) / CELL) - np.floor((p.lat - LAT_MIN) / CELL))
+    assert np.all(side(p0) > c)
+    p, _ = run(p0, StubMet(u=-5.0 / np.sqrt(2), v=5.0 / np.sqrt(2), blh=500.0), elev, hours=24)
+    assert len(p) == 1000
+    assert np.all(side(p) > c)
+
+
+def test_one_cell_ridge_not_tunnelled_at_20_m_s():
+    # 20 m/s * 600 s = 12 km per step, more than one 0.1 degree cell (~10.3 km at 22 N).
+    ridge = col(82.0)
+    elev = flat()
+    elev[:, ridge] = 3000.0
+    p, _ = run(make(np.full(1000, 80.0), 22.0), StubMet(u=20.0, blh=500.0), elev, hours=24)
+    assert len(p) == 1000
+    assert p.lon.max() < LON_MIN + ridge * CELL
+    assert p.lon.mean() > LON_MIN + ridge * CELL - 0.3  # they reached it

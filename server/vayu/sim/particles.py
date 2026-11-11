@@ -1,4 +1,8 @@
-"""Lagrangian particles in a single well-mixed layer, and the transport time step."""
+"""Lagrangian particles in a single well-mixed layer, and the transport time step.
+
+Terrain blocking is "stay", not reflection: a parcel whose full, x-only and y-only moves are all
+refused stays where it is for that step, and that step's turbulent displacement is discarded.
+"""
 from dataclasses import dataclass, fields
 
 import numpy as np
@@ -94,10 +98,14 @@ def step(
        advected and are dropped (StepStats.missing_met). NaN precipitation counts as no rain.
        Proposed move: dx = u*DT + N(0, sqrt(2*K_H*DT)), likewise dy; metres -> degrees at the
        parcel's current latitude.
-    2. Blocking: a candidate position is refused if terrain there exceeds z_m + blh/2 (current
-       z_m, blh at the start position). Candidates in order: full move, x-only, y-only, stay. A
-       candidate outside the domain is never refused (the parcel leaves and is dropped in 5).
-       Terrain below 0 (sea) counts as 0.
+    2. Blocking: a cell is impassable if its terrain exceeds the ceiling z_m + blh/2 (current
+       z_m, blh at the start position). A candidate move is allowed only if both its destination
+       cell and its midpoint cell are passable; the full (diagonal) move additionally needs the
+       x-only or the y-only move to be allowed (no corner cutting). Candidates in order: full
+       move, x-only, y-only, stay. A destination or midpoint outside the domain counts as
+       passable (the parcel leaves and is dropped in 5). Terrain below 0 (sea) counts as 0.
+       Moves up to two cells long are therefore checked against every cell they cross; only a
+       single move longer than two cells can jump a one-cell ridge.
     3. z_m relaxes toward terrain(new position) + blh/2 with time constant Z_RELAX_S.
     4. If `deposition`: mass *= exp(-(V_DEP/blh + WASHOUT_A * precip**WASHOUT_B) * DT), with blh
        and precip from the start position; precip <= 0 gives no washout.
@@ -105,6 +113,11 @@ def step(
 
     All randomness comes from `rng`. The diffusivity K_H_M2_S is read from this module at call
     time.
+
+    Aliasing: the returned `Particles` may share arrays with the input `p` (always `tag` and
+    `mass0_kg`; also `mass_kg` when `deposition=False`; all fields can be shared when no parcel
+    is dropped and a field is unchanged). Callers must not mutate either object's arrays in
+    place.
     """
     s = met.sample(p.lon, p.lat, t_hours)
     usable = ~(np.isnan(s.u) | np.isnan(s.v) | np.isnan(s.blh))
@@ -132,9 +145,19 @@ def step(
     h_full, in_full = _ground(elev, lon_new, lat_new)
     h_x, in_x = _ground(elev, lon_new, p.lat)
     h_y, in_y = _ground(elev, p.lon, lat_new)
-    ok_full = ~in_full | (h_full <= ceiling)
-    ok_x = ~in_x | (h_x <= ceiling)
-    ok_y = ~in_y | (h_y <= ceiling)
+    lon_mid = p.lon + 0.5 * dlon
+    lat_mid = p.lat + 0.5 * dlat
+
+    def passable(h, ok):  # a cell outside the domain counts as passable
+        return ~ok | (h <= ceiling)
+
+    ok_x = passable(h_x, in_x) & passable(*_ground(elev, lon_mid, p.lat))
+    ok_y = passable(h_y, in_y) & passable(*_ground(elev, p.lon, lat_mid))
+    # The full (diagonal) move also needs one orthogonal neighbour on the way to be passable,
+    # so a parcel cannot cut a corner through a diagonal one-cell ridge.
+    ok_full = (
+        passable(h_full, in_full) & passable(*_ground(elev, lon_mid, lat_mid)) & (ok_x | ok_y)
+    )
     choice = np.where(ok_full, 0, np.where(ok_x, 1, np.where(ok_y, 2, 3)))
     lon = np.where((choice == 0) | (choice == 1), lon_new, p.lon)
     lat = np.where((choice == 0) | (choice == 2), lat_new, p.lat)
