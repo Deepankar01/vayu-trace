@@ -33,31 +33,39 @@ export function windLayer(seg: Segments, beforeId: string | undefined) {
   } as never);
 }
 
+export const WIND_RETRY_MS = 5000;
+
 export type FetchWind = (hour: number, signal: AbortSignal) => Promise<WindField>;
 
 /**
  * Wind lattices by whole hour for one build. `get(h)` returns a cached grid or starts a fetch
  * (one in flight per hour); `onLoad` fires when one lands. Hours far from the playhead are evicted
- * and their requests aborted. A failure is remembered (no retry storm) until the build changes.
+ * and their requests aborted. A failed hour is retried after WIND_RETRY_MS (no retry storm);
+ * everything is dropped when the build changes.
  */
 export class WindCache {
   private grids = new Map<number, WindGrid>();
   private inflight = new Map<number, AbortController>();
-  private failed = new Set<number>();
+  /** Hour -> time it failed. */
+  private failed = new Map<number, number>();
   private build: string | null = null;
   private readonly fetchWind: FetchWind;
   private readonly onLoad: () => void;
   private readonly onError: (message: string) => void;
+  private readonly now: () => number;
 
-  constructor(fetchWind: FetchWind, onLoad: () => void, onError: (message: string) => void) {
+  constructor(fetchWind: FetchWind, onLoad: () => void, onError: (message: string) => void, now: () => number = Date.now) {
     this.fetchWind = fetchWind;
     this.onLoad = onLoad;
     this.onError = onError;
+    this.now = now;
   }
 
   /** The grid for `hour` under `build` (null while loading / failed); prefetches `hour + 1`. */
   get(build: string, hour: number, nHours: number): WindGrid | null {
     if (build !== this.build) this.reset(build);
+    const t = this.now();
+    for (const [h, at] of [...this.failed]) if (t - at >= WIND_RETRY_MS) this.failed.delete(h);
     for (const h of [...this.grids.keys()]) if (Math.abs(h - hour) > 2) this.grids.delete(h);
     for (const [h, c] of [...this.inflight]) {
       if (Math.abs(h - hour) > 2) {
@@ -98,7 +106,7 @@ export class WindCache {
         if (this.inflight.get(hour) !== controller) return;
         this.inflight.delete(hour);
         if (controller.signal.aborted) return;
-        this.failed.add(hour);
+        this.failed.set(hour, this.now());
         this.onError(`wind for hour ${hour}: ${e instanceof Error ? e.message : String(e)}`);
       },
     );

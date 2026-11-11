@@ -56,6 +56,19 @@ export function playheadPair(
   return null;
 }
 
+/**
+ * The hour the plume is waiting for at playhead `x`, or null when what is drawn matches the
+ * playhead. Non-null both when nothing is drawn and when only one of the two bracketing hours is
+ * (the picture is then an hour mean, not the blend for this instant). Drives "loading hour N…".
+ */
+export function missingPlumeHour(x: number, nHours: number, loaded: (h: number) => boolean): number | null {
+  const h0 = Math.floor(x);
+  if (!loaded(h0)) return h0;
+  const h1 = h0 + 1;
+  if (x - h0 > 0 && h1 < nHours && !loaded(h1)) return h1;
+  return null;
+}
+
 export interface GridSpec {
   lat_min: number;
   cell: number;

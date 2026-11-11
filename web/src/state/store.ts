@@ -355,7 +355,7 @@ export function createAppStore(deps: StoreDeps = {}) {
       runId: null, status: "idle", progress: 0, stage: "", error: null,
       meta: null, fires: null, firesError: null,
       hour: 0, playing: false, speed: 1,
-      layers: { pm25: true, aqi: false, wind: false, fires: true, terrain: false },
+      layers: { pm25: true, aqi: false, wind: true, fires: true, terrain: false },
       sliders: { ...DEFAULT_SLIDERS }, fireScaling: 1, firesContinue: true,
       regionScenario: { ...NO_SCENARIO }, userSources: [], selectedCity: null, compareBaseline: false,
       measured: {}, cams: {}, frameVersion: 0, frameError: null, sourceError: null, notice: null,

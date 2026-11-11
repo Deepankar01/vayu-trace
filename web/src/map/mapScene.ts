@@ -12,11 +12,11 @@ import { errorMessage, isAbort } from "../api/client";
 import type { Fire, Meta } from "../api/types";
 import type { Weights } from "../lib/compose";
 import type { AppState, AppStore } from "../state/store";
-import { LABEL_ALL_ZOOM, cityLabel, cityLayers, type CityDatum } from "./layers/cities";
+import { LABEL_ALL_ZOOM, LABEL_NCR_ZOOM, cityLabel, cityLayers, type CityDatum } from "./layers/cities";
 import { fireLayers, prepareFires, windowData, type PreparedFires } from "./layers/fires";
 import { pathFetchDue, pathLayer, type PathFetched } from "./layers/path";
 import { PLUME_ROWS, colorizeInto, makeImageData, plumeLayer, type PlumeMode } from "./layers/plume";
-import { PlumeComposer, playheadPair, type HourKey } from "./layers/plumeComposer";
+import { PlumeComposer, missingPlumeHour, playheadPair, type HourKey } from "./layers/plumeComposer";
 import { userSourcesLayer } from "./layers/userSources";
 import { WIND_PARTICLES, WIND_TRAIL_POINTS, WindCache, windLayer } from "./layers/wind";
 import { WindParticles, type WindGrid } from "./layers/windField";
@@ -62,6 +62,8 @@ class Slot<T> {
 export class MapScene {
   private readonly store: AppStore;
   private readonly onProblem: (key: string, message: string | null) => void;
+  private readonly onPlumeLoading: (hour: number | null) => void;
+  private plumeWaiting: number | null = null;
 
   private composer: PlumeComposer | null = null;
   private composerGrid: Meta["grid"] | null = null;
@@ -76,6 +78,7 @@ export class MapScene {
   private readonly wind: WindCache;
   private readonly particles = new WindParticles(WIND_PARTICLES, WIND_TRAIL_POINTS);
   private windGrid: WindGrid | null = null;
+  private windBuild: string | null = null;
 
   private pathLast: PathFetched | null = null;
   private pathBuild: string | null = null;
@@ -94,9 +97,17 @@ export class MapScene {
   private windLayerNow: Layer | null = null;
   private last: Layer[] | null = null;
 
-  constructor(store: AppStore, onProblem: (key: string, message: string | null) => void) {
+  /**
+   * `onProblem(key, message|null)`: per-source problems for the UI. `onPlumeLoading(hour|null)`:
+   * the hour the plume waits for (see `missingPlumeHour`), on changes only.
+   */
+  constructor(
+    store: AppStore, onProblem: (key: string, message: string | null) => void,
+    onPlumeLoading: (hour: number | null) => void = () => {},
+  ) {
     this.store = store;
     this.onProblem = onProblem;
+    this.onPlumeLoading = onPlumeLoading;
     this.wind = new WindCache(
       (hour, signal) => {
         const runId = store.getState().runId;
@@ -119,6 +130,7 @@ export class MapScene {
   frame(dt: number, env: SceneEnv): Layer[] | null {
     const s = this.store.getState();
     if (!env.ready || !s.meta) {
+      this.setPlumeWaiting(null);
       if (this.last && this.last.length === 0) return null;
       this.last = [];
       return this.last;
@@ -129,6 +141,9 @@ export class MapScene {
     const weights = s.weights();
     let changed = false;
 
+    const mode = plumeModeOf(s);
+    const frames = this.store.frames;
+    this.setPlumeWaiting(mode ? missingPlumeHour(x, meta.hours.length, (hh) => frames.get(hh) !== undefined) : null);
     changed = this.updatePlume(s, meta, x, weights, env) || changed;
     const windNow = this.updateWind(s, meta, h, dt, env);
     changed = windNow !== this.windLayerNow || changed;
@@ -152,6 +167,12 @@ export class MapScene {
     push(this.slots.cities.value);
     this.last = list;
     return list;
+  }
+
+  private setPlumeWaiting(hour: number | null): void {
+    if (hour === this.plumeWaiting) return;
+    this.plumeWaiting = hour;
+    this.onPlumeLoading(hour);
   }
 
   // --- plume ---
@@ -220,6 +241,10 @@ export class MapScene {
   // --- wind ---
 
   private updateWind(s: AppState, meta: Meta, h: number, dt: number, env: SceneEnv): Layer | null {
+    if (meta.build_id !== this.windBuild) {
+      this.windBuild = meta.build_id;
+      this.windGrid = null; // never advect through a previous build's wind
+    }
     if (!s.layers.wind || !s.runId) {
       this.windGrid = null;
       return null;
@@ -297,16 +322,20 @@ export class MapScene {
 
   private updateCities(s: AppState, meta: Meta, h: number, weights: Weights, env: SceneEnv): boolean {
     this.slots.cityData.update([meta.cities, weights, h], () => {
-      try {
-        const data = meta.cities.map((city) => ({ city, label: cityLabel(city, h, weights) }));
-        this.onProblem("cities", null);
-        return data;
-      } catch (e) {
-        this.onProblem("cities", `city labels: ${errorMessage(e)}`);
-        return [];
+      // one city's failure must not blank the others: skip it and report the first problem
+      let problem: string | null = null;
+      const data: CityDatum[] = [];
+      for (const city of meta.cities) {
+        try {
+          data.push({ city, label: cityLabel(city, h, weights) });
+        } catch (e) {
+          problem ??= `city ${city.id}: ${errorMessage(e)}`;
+        }
       }
+      this.onProblem("cities", problem);
+      return data;
     });
-    const showAll = env.zoom >= LABEL_ALL_ZOOM;
+    const showAll = (env.zoom >= LABEL_ALL_ZOOM ? 1 : 0) + (env.zoom >= LABEL_NCR_ZOOM ? 1 : 0); // label tier
     const select = this.store.getState().selectCity;
     return this.slots.cities.update([this.slots.cityData.value, s.selectedCity, showAll, env.armedForDrop], () =>
       cityLayers({

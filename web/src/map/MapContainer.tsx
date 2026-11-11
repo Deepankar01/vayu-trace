@@ -9,6 +9,7 @@ import type * as maplibregl from "maplibre-gl";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { useDropStore } from "./dropStore";
+import { useMapStatus } from "./mapStatus";
 import { INITIAL_VIEW, LAYER_IDS, MapView, type MapReadyInfo } from "./MapView";
 import { MapScene, type SceneEnv } from "./mapScene";
 import { useMapAnimation } from "./useMapAnimation";
@@ -33,7 +34,11 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
   latest.current = { onDropPoint, onProblem };
 
   useEffect(() => {
-    const scene = new MapScene(useStore, (k, m) => latest.current.onProblem?.(k, m));
+    const scene = new MapScene(
+      useStore,
+      (k, m) => latest.current.onProblem?.(k, m),
+      (hour) => useMapStatus.setState({ plumeLoadingHour: hour }),
+    );
     sceneRef.current = scene;
     return () => {
       scene.dispose();
@@ -41,10 +46,13 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
     };
   }, []);
 
-  useMapAnimation((dt) => {
-    const next = sceneRef.current?.frame(dt, env.current);
-    if (next) setLayers(next);
-  });
+  useMapAnimation(
+    (dt) => {
+      const next = sceneRef.current?.frame(dt, env.current);
+      if (next) setLayers(next);
+    },
+    (message) => latest.current.onProblem?.("animation", message),
+  );
 
   const onMapReady = useCallback((map: maplibregl.Map, _info: MapReadyInfo) => {
     void _info;

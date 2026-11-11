@@ -12,6 +12,8 @@
  * `pm25ToAqi` (indicative: an hourly value on the 24-hour scale). `diff`: composed minus baseline,
  * blue for reduction, red for increase, transparent within +/-2 ug/m3, saturating at +/-100.
  * Missing cells (NaN) are transparent in every mode.
+ * A cell with missing HUMIDITY is drawn at dry opacity (humidity missing is not concentration
+ * missing); a cell with missing CONCENTRATION is transparent.
  */
 import { BitmapLayer } from "@deck.gl/layers";
 import type { Texture } from "@luma.gl/core";
@@ -24,11 +26,11 @@ export type PlumeMode = "pm25" | "aqi" | "diff";
 export const DOMAIN_BOUNDS: [number, number, number, number] = [66, 6, 98, 38];
 
 /**
- * Output rows after Mercator resampling. With nearest-row sampling every source row must get at
- * least one output row: the thinnest source row (at 6 N) spans 1/354 of the domain's Mercator
- * height, so anything above 354 keeps every row; 400 leaves margin.
+ * Output rows after Mercator resampling (nearest source row per output row). The thinnest source
+ * row (at 6 N) spans 1/354 of the domain's Mercator height, so more than 354 rows keeps every
+ * row; 800 also bounds the placement error to half an output row (<= 2.4 km).
  */
-export const PLUME_ROWS = 400;
+export const PLUME_ROWS = 800;
 
 export const DIFF_DEAD_BAND = 2;
 export const DIFF_SATURATION = 100;
@@ -108,11 +110,11 @@ function hexRgb(h: string): [number, number, number] {
   return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 }
 
-/** AQI-mode alpha: like the ramp it is 0 at or below 5 ug/m3, but categories need to read, so it
- *  starts at 60 and reaches 215 at 250 ug/m3. */
+/** AQI-mode alpha: 0 at or below 5 ug/m3 like the ramp, rising continuously (no hard edge) and
+ *  faster than the ramp so categories read, reaching 215 at 155 ug/m3. */
 function aqiAlpha(v: number): number {
   if (!(v > 5)) return 0;
-  return Math.round(60 + 155 * Math.min(1, (v - 5) / 245));
+  return Math.round(215 * Math.min(1, (v - 5) / 150));
 }
 
 function buildLut(mode: "pm25" | "aqi"): Uint8Array {
@@ -138,8 +140,8 @@ const lutFor = (mode: "pm25" | "aqi") =>
 /**
  * Colourise `a*(1-t) + b*t` (b may be null: just `a`) into `out` (RGBA, `nx*ny*4`), flipping rows
  * so row 0 of the image is the northern-most. `hazeA/hazeB` (same blend) scale the alpha in
- * pm25 and aqi modes; null means dry (factor 0.6). NaN at either end is transparent. No
- * allocation: call it every animation frame with the same `out`.
+ * pm25 and aqi modes; a missing side counts as dry (ratio 1), both missing gives factor 0.6.
+ * NaN at either end is transparent. No allocation: call it every animation frame with `out`.
  */
 export function colorizeInto(
   out: Uint8ClampedArray, nx: number, ny: number, mode: PlumeMode,
@@ -152,7 +154,8 @@ export function colorizeInto(
   const s = b ? 1 - t : 1;
   const tt = b ? t : 0;
   const hA = hazeA;
-  const hB = hazeB ?? hazeA;
+  const hB = b ? hazeB : null; // never borrow the other frame's humidity
+  const anyHaze = hA !== null || hB !== null;
   const lut = mode === "diff" ? null : lutFor(mode);
   for (let row = 0; row < ny; row++) {
     const src = row * nx;
@@ -171,7 +174,7 @@ export function colorizeInto(
         out[o] = lut[l];
         out[o + 1] = lut[l + 1];
         out[o + 2] = lut[l + 2];
-        const ratio = hA ? hA[k] * s + hB![k] * tt : NaN;
+        const ratio = anyHaze ? (hA ? hA[k] : 1) * s + (hB ? hB[k] : 1) * tt : NaN;
         out[o + 3] = lut[l + 3] * hazeOpacityFactor(ratio);
       } else {
         const c = v < 0 ? DIFF_DOWN : DIFF_UP;

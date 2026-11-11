@@ -37,7 +37,7 @@ export function pathLayer(points: [number, number][], beforeId: string | undefin
     capRounded: true,
     jointRounded: true,
     extensions: [dashes],
-    getDashArray: [2, 5], // short dashes, ~square at this width: a dotted line
+    getDashArray: [2, 7], // short dashes, ~square at this width, wide gaps: reads as dots
     dashUnits: "pixels",
     dashJustified: true,
     beforeId,

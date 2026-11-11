@@ -1,7 +1,7 @@
 import { aqiColor, pm25Ramp } from "../../lib/colors";
 import { pm25ToAqi } from "../../lib/aqi";
 import {
-  DIFF_DEAD_BAND, DIFF_SATURATION, colorizeInto, fieldToImageData, hazeOpacityFactor, mercatorY,
+  PLUME_ROWS, DIFF_DEAD_BAND, DIFF_SATURATION, colorizeInto, fieldToImageData, hazeOpacityFactor, mercatorY,
   resampleRowsToMercator,
 } from "./plume";
 
@@ -98,6 +98,20 @@ describe("fieldToImageData", () => {
     expect(px(img, 4, 0)[3]).toBeLessThan(px(img, 0, 0)[3]);
   });
 
+  it("haze: a side without a haze field counts as dry (ratio 1), never borrowing the other's", () => {
+    const f = new Float32Array([150]);
+    const a = pm25Ramp(150)[3];
+    const only = (hA: Float32Array | null, hB: Float32Array | null) => {
+      const out = new Uint8ClampedArray(4);
+      colorizeInto(out, 1, 1, "pm25", f, f, 0.5, hA, hB);
+      return out[3];
+    };
+    // A has ratio 2, B none: 0.5 * 2 + 0.5 * 1 = 1.5 -> factor 0.8 (borrowing would give 1.0)
+    expect(Math.abs(only(new Float32Array([2]), null) - a * 0.8)).toBeLessThanOrEqual(1.5);
+    expect(Math.abs(only(null, new Float32Array([2])) - a * 0.8)).toBeLessThanOrEqual(1.5);
+    expect(Math.abs(only(null, null) - a * 0.6)).toBeLessThanOrEqual(1.5);
+  });
+
   it("colorizeInto lerps two fields (NaN where either end is NaN)", () => {
     const a = new Float32Array([0, 100, NaN]);
     const b = new Float32Array([200, 100, 100]);
@@ -134,7 +148,7 @@ describe("hazeOpacityFactor", () => {
 });
 
 describe("resampleRowsToMercator", () => {
-  const NX = 320, NY = 320, LAT0 = 6, LAT1 = 38, ROWS = 400;
+  const NX = 320, NY = 320, LAT0 = 6, LAT1 = 38, ROWS = PLUME_ROWS;
   const mercRow = (lat: number) =>
     Math.floor(((mercatorY(lat) - mercatorY(LAT0)) / (mercatorY(LAT1) - mercatorY(LAT0))) * ROWS);
 
@@ -142,18 +156,18 @@ describe("resampleRowsToMercator", () => {
     ["Delhi", 28.61, 77.21],
     ["Chennai", 13.08, 80.27],
     ["Srinagar", 34.08, 74.8],
-  ])("a hot cell at %s lands at the Mercator row of its latitude", (_name, lat, lon) => {
+  ])("a hot cell at %s is sampled by exactly the image row whose Mercator span holds the cell centre", (_name, lat, lon) => {
     const f = new Float32Array(NX * NY);
     const j = Math.floor((lat - LAT0) / 0.1);
     const i = Math.floor((lon - 66) / 0.1);
     f[j * NX + i] = 500;
     const out = resampleRowsToMercator(f, NX, NY, LAT0, LAT1, ROWS);
     expect(out.length).toBe(NX * ROWS);
-    // the hot rows: present, and all within one output row (~0.09 deg) of the city's Mercator row
+    expect(ROWS).toBe(800);
+    const centre = LAT0 + (j + 0.5) * 0.1;
+    expect(out[mercRow(centre) * NX + i]).toBe(500);
     const hot: number[] = [];
     for (let r = 0; r < ROWS; r++) if (out[r * NX + i] === 500) hot.push(r);
-    expect(hot.length).toBeGreaterThanOrEqual(1);
-    for (const r of hot) expect(Math.abs(r - mercRow(lat))).toBeLessThanOrEqual(1);
     // the output row's centre latitude lies inside the source cell [j*0.1+6, (j+1)*0.1+6)
     for (const r of hot) {
       const y = mercatorY(LAT0) + ((r + 0.5) / ROWS) * (mercatorY(LAT1) - mercatorY(LAT0));
@@ -169,7 +183,7 @@ describe("resampleRowsToMercator", () => {
     expect(Math.abs(linearRow - mercRow(lat))).toBeGreaterThanOrEqual(3);
   });
 
-  it("every source row appears (no row is skipped) at 400 output rows", () => {
+  it("every source row appears (no row is skipped)", () => {
     const f = new Float32Array(NX * NY);
     for (let j = 0; j < NY; j++) f[j * NX] = j;
     const out = resampleRowsToMercator(f, NX, NY, LAT0, LAT1, ROWS);
@@ -195,6 +209,6 @@ describe("resampleRowsToMercator", () => {
       else expect(out[r * NX]).toBe(10);
     }
     expect(nanRows).toBeGreaterThanOrEqual(1);
-    expect(nanRows).toBeLessThanOrEqual(2);
+    expect(nanRows).toBeLessThanOrEqual(3);
   });
 });

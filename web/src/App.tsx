@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { MapContainer } from "./map/MapContainer";
 import { useDropStore } from "./map/dropStore";
+import { useMapStatus } from "./map/mapStatus";
 import { useStore } from "./state/store";
 
 /** `?date=YYYY-MM-DD`, else today's UTC date. */
@@ -62,10 +63,12 @@ function useDevKeys() {
 function DevStatus({ problems, drop }: { problems: Record<string, string>; drop: [number, number] | null }) {
   const s = useStore();
   const armed = useDropStore((d) => d.armedForDrop);
+  const loadingHour = useMapStatus((m) => m.plumeLoadingHour);
   const lines = [
-    `${s.status}${s.stage ? ` · ${s.stage}` : ""}${s.status === "running" ? ` · ${Math.round(s.progress * 100)}%` : ""}`,
+    `${s.status}${s.stage && s.status !== "ready" ? ` · ${s.stage}` : ""}${s.status === "running" ? ` · ${Math.round(s.progress * 100)}%` : ""}`,
     s.meta ? `hour ${s.hour.toFixed(2)} / ${s.meta.hours.length - 1} · ${s.meta.hours[Math.floor(s.hour)]} UTC · ${s.playing ? `playing ${s.speed}×` : "paused"}` : null,
     s.meta ? `plume ${s.compareBaseline ? "difference from baseline" : s.layers.aqi ? "AQI (indicative: hourly PM2.5 on the 24 h scale)" : "PM2.5"} · wind ${s.layers.wind ? "on" : "off"}` : null,
+    loadingHour !== null ? `loading hour ${loadingHour}…` : null,
     s.selectedCity ? `selected ${s.selectedCity}` : null,
     armed ? "drop source: click the map (Esc cancels)" : null,
     drop ? `drop point ${drop[0].toFixed(2)}, ${drop[1].toFixed(2)}` : null,

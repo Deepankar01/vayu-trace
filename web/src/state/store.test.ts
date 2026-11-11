@@ -614,3 +614,9 @@ describe("memoised weights selectors", () => {
     expect(h.get().baselineWeights()).toBe(b); // sliders do not move the baseline
   });
 });
+
+describe("layer defaults", () => {
+  it("PM2.5 plume, fires and wind streaks on; AQI and 3D terrain off", () => {
+    expect(createAppStore().getState().layers).toEqual({ pm25: true, aqi: false, wind: true, fires: true, terrain: false });
+  });
+});

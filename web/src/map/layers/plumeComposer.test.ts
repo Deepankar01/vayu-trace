@@ -1,6 +1,6 @@
 import { makeFrame } from "../../test-utils/frames";
 import { PLUME_ROWS } from "./plume";
-import { PlumeComposer, playheadPair, sameHourKey, type HourKey } from "./plumeComposer";
+import { PlumeComposer, missingPlumeHour, playheadPair, sameHourKey, type HourKey } from "./plumeComposer";
 
 const NX = 320, NY = 320;
 const GRID = { lat_min: 6, cell: 0.1, nx: NX, ny: NY };
@@ -82,5 +82,19 @@ describe("playheadPair", () => {
   it("on a whole hour or the last hour uses that hour alone", () => {
     expect(playheadPair(3, 10, have([3, 4]))).toEqual({ a: 3, b: null, t: 0 });
     expect(playheadPair(9, 10, have([9]))).toEqual({ a: 9, b: null, t: 0 });
+  });
+});
+
+describe("missingPlumeHour", () => {
+  const have = (hours: number[]) => (h: number) => hours.includes(h);
+  it("is null when the drawn plume matches the playhead", () => {
+    expect(missingPlumeHour(3.25, 10, have([3, 4]))).toBeNull();
+    expect(missingPlumeHour(3, 10, have([3]))).toBeNull(); // whole hour needs only itself
+    expect(missingPlumeHour(9.5, 10, have([9]))).toBeNull(); // last hour has no next
+  });
+  it("names the missing hour when nothing or only one bracketing hour is drawn", () => {
+    expect(missingPlumeHour(3.25, 10, have([]))).toBe(3);
+    expect(missingPlumeHour(3.25, 10, have([4]))).toBe(3);
+    expect(missingPlumeHour(3.25, 10, have([3]))).toBe(4);
   });
 });

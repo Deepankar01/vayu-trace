@@ -15,7 +15,10 @@ const MAX_R = 9;
 const MIN_ALPHA = 0.15;
 
 const GLOW_RGB = [0xff, 0x5a, 0x2b];
-const CORE_RGB = [0xff, 0xd9, 0xa8];
+// Additive: thousands of overlapping detections in Punjab add up, so each one is faint.
+const GLOW_ALPHA = 0.16;
+const CORE_ALPHA = 0.5;
+const CORE_RGB = [0xff, 0xb8, 0x80]; // between the mockup's #ffd9a8 core and the fire red: reads as embers, not a white blob
 
 export function fireRadiusPx(frpMw: number): number {
   if (!(frpMw > 0)) return MIN_R;
@@ -92,11 +95,11 @@ export function windowData(p: PreparedFires, x: number): FireWindowData {
     p.glow[o] = GLOW_RGB[0];
     p.glow[o + 1] = GLOW_RGB[1];
     p.glow[o + 2] = GLOW_RGB[2];
-    p.glow[o + 3] = Math.round(255 * 0.8 * a);
+    p.glow[o + 3] = Math.round(255 * GLOW_ALPHA * a);
     p.core[o] = CORE_RGB[0];
     p.core[o + 1] = CORE_RGB[1];
     p.core[o + 2] = CORE_RGB[2];
-    p.core[o + 3] = Math.round(255 * 0.75 * a);
+    p.core[o + 3] = Math.round(255 * CORE_ALPHA * a);
   }
   return {
     length: hi - lo,
@@ -135,7 +138,7 @@ export function fireLayers(w: FireWindowData, beforeId: string | undefined) {
       ...common,
       id: "fires-glow",
       data: { ...base, attributes: { ...base.attributes, getFillColor: { value: w.glow, size: 4, normalized: true } } },
-      radiusScale: 2.4,
+      radiusScale: 1.8,
     } as never),
     new ScatterplotLayer({
       ...common,
@@ -143,6 +146,8 @@ export function fireLayers(w: FireWindowData, beforeId: string | undefined) {
       data: { ...base, attributes: { ...base.attributes, getFillColor: { value: w.core, size: 4, normalized: true } } },
       radiusScale: 0.35,
       radiusMinPixels: 0.8,
+      // the cores blend normally: additive cores turn a dense cluster into a white blob
+      parameters: { depthWriteEnabled: false },
     } as never),
   ];
 }

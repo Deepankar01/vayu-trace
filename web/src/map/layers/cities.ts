@@ -1,6 +1,6 @@
 /**
- * City markers and their two-line labels: the name, then one of "AQI N" / "arrives +N h" /
- * "smoke present · N h old" (the smoke lines from the weighted fire contribution and the
+ * City markers and their labels: the name, then "AQI N" and, when smoke is present or on its way,
+ * " · smoke present · N h old" / " · arrives +N h" (from the weighted fire contribution and the
  * 15 ug/m3 threshold of `arrival`). Marker colour is the CPCB category of the AQI.
  */
 import type { PickingInfo } from "@deck.gl/core";
@@ -13,8 +13,12 @@ import { cityTotals, type Weights } from "../../lib/compose";
 import { hexToRgba } from "./rgba";
 
 export interface CityLabel {
+  /** The city name. */
   primary: string;
-  secondary: string;
+  /** "AQI N" (rounded) or "AQI –". */
+  aqiText: string;
+  /** "smoke present · N h old" / "smoke present" / "arrives +N h", or null. */
+  secondary: string | null;
   /** CPCB category colour of `aqi` (mute grey when null). */
   color: string;
   /** PM2.5-based AQI of the rolling 24 h mean, null when unavailable. */
@@ -66,10 +70,10 @@ function seriesFor(city: CityMeta, weights: Weights): Series {
 }
 
 /**
- * The label at `hourIndex` (floored). AQI = `pm25ToAqi(rolling24h(cityTotals(...), h))`, "AQI N"
- * rounded or "AQI –". Secondary: "smoke present · N h old" (N = `fire_age_h[h]` rounded; just
- * "smoke present" if the age is null) when the weighted fire contribution is >= 15 at h,
- * "arrives +N h" when it first reaches 15 later, else the AQI text.
+ * The label at `hourIndex` (floored). AQI = `pm25ToAqi(rolling24h(cityTotals(...), h))`:
+ * `aqiText` "AQI N" rounded or "AQI –". `secondary`: "smoke present · N h old" (N =
+ * `fire_age_h[h]` rounded; just "smoke present" if the age is null) when the weighted fire
+ * contribution is >= 15 at h, "arrives +N h" when it first reaches 15 later, else null.
  */
 export function cityLabel(city: CityMeta, hourIndex: number, weights: Weights): CityLabel {
   const h = Math.floor(hourIndex);
@@ -77,14 +81,19 @@ export function cityLabel(city: CityMeta, hourIndex: number, weights: Weights): 
   const mean = rolling24h(totals, h);
   const aqi = mean == null ? null : pm25ToAqi(mean);
   const aqiText = aqi == null ? "AQI –" : `AQI ${Math.round(aqi)}`;
-  let secondary = aqiText;
+  let secondary: string | null = null;
   if (h >= 0 && h < fire.length) {
     const age = city.fire_age_h[h] ?? null;
     const a = arrival(fire, h, age);
     if (a.kind === "present") secondary = a.age_h == null ? "smoke present" : `smoke present · ${Math.round(a.age_h)} h old`;
     else if (a.kind === "arrives") secondary = `arrives +${a.in_h} h`;
   }
-  return { primary: city.name, secondary, color: aqiColor(aqi), aqi };
+  return { primary: city.name, aqiText, secondary, color: aqiColor(aqi), aqi };
+}
+
+/** The label's second line as drawn: "AQI 312 · smoke present · 17 h old". */
+export function statusLine(l: CityLabel): string {
+  return l.secondary ? `${l.aqiText} · ${l.secondary}` : l.aqiText;
 }
 
 /** Labels shown at low zoom; every label from LABEL_ALL_ZOOM. */
@@ -93,8 +102,12 @@ export const PRIORITY_CITIES: ReadonlySet<string> = new Set([
   "chennai", "bengaluru", "hyderabad", "ahmedabad",
 ]);
 export const LABEL_ALL_ZOOM = 5.5;
+/** Delhi's NCR neighbours sit within a few pixels of Delhi until well zoomed in. */
+export const NCR_SATELLITES: ReadonlySet<string> = new Set(["gurugram", "noida", "ghaziabad", "faridabad"]);
+export const LABEL_NCR_ZOOM = 7;
 
 export function showLabel(cityId: string, zoom: number): boolean {
+  if (NCR_SATELLITES.has(cityId)) return zoom >= LABEL_NCR_ZOOM;
   return zoom >= LABEL_ALL_ZOOM || PRIORITY_CITIES.has(cityId);
 }
 
@@ -107,6 +120,9 @@ const FONT = '-apple-system, "Inter", "Segoe UI", sans-serif';
 const TEXT: [number, number, number, number] = [0xe8, 0xea, 0xf0, 255];
 const MUTE: [number, number, number, number] = [0xa3, 0xab, 0xbd, 255]; // --mute, lifted a touch for the halo
 const HALO: [number, number, number, number] = [0x0b, 0x0e, 0x13, 200];
+// Printable ASCII plus the label punctuation ("·", "–"). Not "auto": in deck.gl 9.4 the auto set
+// did not reach the font atlas and these two glyphs rendered blank.
+const CHARACTERS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("") + "·–";
 const SDF = { sdf: true, fontSize: 64, buffer: 8, radius: 12 };
 
 export interface CityLayerProps {
@@ -172,13 +188,13 @@ export function cityLayers({ data, selected, zoom, pickable, onSelect }: CityLay
       fontSettings: SDF,
       outlineWidth: 3,
       outlineColor: HALO,
-      characterSet: "auto",
+      characterSet: CHARACTERS,
     }),
     new TextLayer<CityDatum>({
       id: "city-status",
       data: labelled,
       getPosition: pos,
-      getText: (d) => d.label.secondary,
+      getText: (d) => statusLine(d.label),
       getSize: 10,
       sizeUnits: "pixels",
       getColor: MUTE,
@@ -190,8 +206,8 @@ export function cityLayers({ data, selected, zoom, pickable, onSelect }: CityLay
       fontSettings: SDF,
       outlineWidth: 3,
       outlineColor: HALO,
-      characterSet: "auto",
-      updateTriggers: { getText: [labelled.map((d) => d.label.secondary).join("|")] },
+      characterSet: CHARACTERS,
+      updateTriggers: { getText: [labelled.map((d) => statusLine(d.label)).join("|")] },
     }),
   ];
 }

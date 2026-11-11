@@ -1,7 +1,7 @@
 import type { CityMeta } from "../../api/types";
 import { pm25ToAqi, rolling24h } from "../../lib/aqi";
 import { aqiColor } from "../../lib/colors";
-import { LABEL_ALL_ZOOM, cityLabel, fireSeries, showLabel } from "./cities";
+import { LABEL_ALL_ZOOM, cityLabel, fireSeries, showLabel, statusLine } from "./cities";
 
 const N = 48;
 const flat = (v: number | null) => Array.from({ length: N }, () => v);
@@ -25,13 +25,17 @@ describe("cityLabel", () => {
     const l = cityLabel(c, 20, W);
     expect(l.primary).toBe("Kanpur");
     expect(l.secondary).toBe("arrives +9 h");
+    expect(l.aqiText).toBe(`AQI ${Math.round(pm25ToAqi(100))}`); // the AQI is still there
+    expect(statusLine(l)).toBe(`AQI ${Math.round(pm25ToAqi(100))} · arrives +9 h`);
   });
 
   it("'smoke present · 17 h old' when the fire contribution is at or above 15 now", () => {
     const age = flat(null);
     age[30] = 16.6;
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(100), fire_punjab: flat(10), firefc_punjab: flat(5) }, fire_age_h: age });
-    expect(cityLabel(c, 30, W).secondary).toBe("smoke present · 17 h old");
+    const l = cityLabel(c, 30, W);
+    expect(l.secondary).toBe("smoke present · 17 h old");
+    expect(l.aqiText).toBe(`AQI ${Math.round(pm25ToAqi(115))}`);
   });
 
   it("'smoke present' alone when the age is unknown", () => {
@@ -43,7 +47,9 @@ describe("cityLabel", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(100), fire_punjab: flat(80) } });
     const l = cityLabel(c, 30, { ...W, fire_punjab: 0 });
     const aqi = pm25ToAqi(rolling24h(flat(100), 30)!);
-    expect(l.secondary).toBe(`AQI ${Math.round(aqi)}`);
+    expect(l.aqiText).toBe(`AQI ${Math.round(aqi)}`);
+    expect(l.secondary).toBeNull();
+    expect(statusLine(l)).toBe(`AQI ${Math.round(aqi)}`);
     expect(l.aqi).toBeCloseTo(aqi);
     expect(l.color).toBe(aqiColor(aqi));
   });
@@ -51,24 +57,27 @@ describe("cityLabel", () => {
   it("AQI uses the weighted total (fires included)", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(50), fire_punjab: flat(10) } });
     const l = cityLabel(c, 30, W);
-    expect(l.secondary).toBe(`AQI ${Math.round(pm25ToAqi(60))}`);
+    expect(l.aqiText).toBe(`AQI ${Math.round(pm25ToAqi(60))}`);
   });
 
   it("'AQI –' and the mute colour while fewer than 16 hours are available", () => {
     const l = cityLabel(city(), 5, W);
-    expect(l.secondary).toBe("AQI –");
+    expect(l.aqiText).toBe("AQI –");
+    expect(l.secondary).toBeNull();
     expect(l.aqi).toBeNull();
     expect(l.color).toBe(aqiColor(null));
   });
 
   it("missing totals give 'AQI –'", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(null), fire_punjab: flat(0) } });
-    expect(cityLabel(c, 30, W).secondary).toBe("AQI –");
+    expect(cityLabel(c, 30, W).aqiText).toBe("AQI –");
   });
 
   it("the last hour: no later crossing, so the AQI line", () => {
     const c = city();
-    expect(cityLabel(c, N - 1, W).secondary).toMatch(/^AQI \d+$/);
+    const l = cityLabel(c, N - 1, W);
+    expect(l.secondary).toBeNull();
+    expect(l.aqiText).toMatch(/^AQI \d+$/);
   });
 
   it("a fractional hour is floored", () => {
@@ -97,8 +106,12 @@ describe("fireSeries", () => {
 describe("showLabel", () => {
   it("shows only priority cities below the declutter zoom, all from it", () => {
     expect(showLabel("delhi", 4.6)).toBe(true);
-    expect(showLabel("gurugram", 4.6)).toBe(false);
-    expect(showLabel("gurugram", LABEL_ALL_ZOOM)).toBe(true);
+    expect(showLabel("hisar", 4.6)).toBe(false);
+    expect(showLabel("hisar", LABEL_ALL_ZOOM)).toBe(true);
     expect(LABEL_ALL_ZOOM).toBe(5.5);
+  });
+  it("labels Delhi's NCR neighbours only from zoom 7 (they overlap Delhi's label before)", () => {
+    expect(showLabel("gurugram", 6.5)).toBe(false);
+    expect(showLabel("noida", 7)).toBe(true);
   });
 });

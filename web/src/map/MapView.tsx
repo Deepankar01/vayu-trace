@@ -1,6 +1,6 @@
 import type { Layer } from "@deck.gl/core";
 import type { Device } from "@luma.gl/core";
-import { MapboxOverlay } from "@deck.gl/mapbox";
+import { MapLibreOverlay } from "@deck.gl/maplibre";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
@@ -124,7 +124,7 @@ function setupMap(map: maplibregl.Map, terrain: boolean): MapReadyInfo {
 export function MapView({ layers = [], terrain = true, onMapReady, onError, onDevice }: MapViewProps) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
-  const overlayRef = useRef<MapboxOverlay | null>(null);
+  const overlayRef = useRef<MapLibreOverlay | null>(null);
   const readyRef = useRef(false);
   // Latest props, readable from the one-time load handler.
   const latest = useRef({ layers, terrain, onMapReady, onError, onDevice });
@@ -142,12 +142,17 @@ export function MapView({ layers = [], terrain = true, onMapReady, onError, onDe
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
 
-    const overlay = new MapboxOverlay({
+    const overlay = new MapLibreOverlay({
       interleaved: true,
+      // Every deck.gl layer here is flat and ordered by `beforeId`/array order, so depth testing
+      // only hurts: against MapLibre's depth buffer at pitch it clipped flat circles into slivers
+      // and hid some text entirely.
+      parameters: { depthCompare: "always", depthWriteEnabled: false },
+      pickingRadius: 8, // city markers are small: be forgiving
       layers: latest.current.layers,
       onDeviceInitialized: (device: Device) => latest.current.onDevice?.(device),
     });
-    map.addControl(overlay as unknown as maplibregl.IControl);
+    map.addControl(overlay);
     mapRef.current = map;
     overlayRef.current = overlay;
 
