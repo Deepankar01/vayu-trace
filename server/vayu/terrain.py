@@ -6,6 +6,7 @@ tile pixels are NaN. Sea cells keep Terrarium's bathymetry (negative values).
 import io
 import math
 import os
+import uuid
 
 import httpx
 import numpy as np
@@ -133,7 +134,7 @@ def elevation() -> np.ndarray:
         if np.isnan(grid).any():
             raise UpstreamError("terrain", "tiles do not cover the whole model domain")
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         with open(tmp, "wb") as f:
             np.save(f, grid)
         os.replace(tmp, path)

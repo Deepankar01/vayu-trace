@@ -2,6 +2,7 @@
 import hashlib
 import os
 import time
+import uuid
 from collections.abc import Callable
 
 from vayu import config
@@ -19,7 +20,7 @@ def cached_bytes(
         return path.read_bytes()
     data = fetch()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
     return data

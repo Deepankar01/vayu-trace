@@ -8,6 +8,7 @@ that has one is access-restricted, so the `dust` grids are zero and flagged (see
 """
 import hashlib
 import json
+import uuid
 from pathlib import Path
 
 import netCDF4
@@ -178,7 +179,7 @@ def inventory_emissions() -> Emissions:
                 grids = {s: z[s] for s in EDGAR_SECTORS}
     if grids is None:
         grids = sector_grids()
-        tmp = cache.with_name(cache.name + ".tmp.npz")
+        tmp = cache.with_name(f"{cache.name}.{uuid.uuid4().hex}.tmp.npz")
         np.savez_compressed(tmp, key=np.array(key), **grids)
         tmp.replace(cache)
     return split_by_region(grids)
