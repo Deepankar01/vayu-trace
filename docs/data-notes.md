@@ -7,7 +7,7 @@
 - Depiction: believed to follow the official Government of India / Survey of India outline. Jammu & Kashmir includes Pakistan-occupied Kashmir (west to 73.39 E) and Ladakh includes Aksai Chin (north to 37.08 N, east to 80.33 E); Arunachal Pradesh is shown in full (to 97.41 E).
 - Processing: kept only the state name (property `name`, from `STNAME_SH`); geometry repaired with `buffer(0)`, simplified with Douglas-Peucker tolerance 0.01 degree (topology preserved), coordinates rounded to 3 decimals. About 300 KB. Source file was about 2.2 MB.
 - The source README says some data reflects 2019 boundaries and asks users to verify for legal purposes; this is used for 0.1 degree rasterisation and a map line only.
-- Used for: `region_mask()` / `fire_state_mask()` (cell centres tested with `shapely.contains_xy`), and the web map in Task 12.
+- Used for: `region_mask()` / `fire_state_mask()` (cell centres tested with `shapely.contains_xy`), and the boundary line on the web map.
 
 ### Conformance checks (by inspection, not by authority)
 Conformance to the official Government of India / Survey of India depiction was verified by the checks below on the simplified file, not by any official certification:
@@ -150,11 +150,11 @@ Profile of the simulation stage (cProfile, 58.8 s):
 | fire-age weighted median (within frame building) | 4.6 s |
 | zlib frame compression | 7.7 s |
 
-Machine load varies a lot between measurements here; another job was running in parallel. The previous round's 114 s profile had zlib at 13.7 s and `sample` at 23 s. That code did not change, so those components ran faster this time, not because of an optimisation. Expect variance of tens of percent between runs on this machine.
+Machine load varies a lot between measurements here; another job was running in parallel. The version 2 profile (114 s) had zlib at 13.7 s and `sample` at 23 s. That code did not change, so those components ran faster this time, not because of an optimisation. Expect variance of tens of percent between runs on this machine.
 
-Peak live parcels 286,987. Dropped parcels over the run: left the domain 12,277; depleted below 1 % of release mass 334,929; missing met 0. These match the previous round exactly, as expected from a bit-identical `step`. `blh_estimated` is false: the archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window.
+Peak live parcels 286,987. Dropped parcels over the run: left the domain 12,277; depleted below 1 % of release mass 334,929; missing met 0. These match version 2 exactly, as expected from a bit-identical `step`. `blh_estimated` is false: the archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window.
 
-Cold first run of a new date: the free Open-Meteo archive answers HTTP 429 when all 22 full-domain batches are requested at once, and the client's backoff (1+2+4+8+16 s) does not outlast it. A retry a minute or so later completes from the partly filled cache; with a cold weather cache the previous round measured 12.6 s for the fetch. Changing the requested hours changes every cache key and triggers this again. The terrain tiles add 20 s once per installation.
+Cold first run of a new date: the free Open-Meteo archive answers HTTP 429 when all 22 full-domain batches are requested at once, and the client's backoff (1+2+4+8+16 s) does not outlast it. A retry a minute or so later completes from the partly filled cache; with a cold weather cache an earlier measurement (version 2) took 12.6 s for the fetch. Changing the requested hours changes every cache key and triggers this again. The terrain tiles add 20 s once per installation.
 
 Most parcels end by depletion, not by leaving the domain. With mixing heights near the 100 m floor at night, dry deposition at 0.2 cm/s removes about 7 % of a parcel's mass per hour, so parcels fall below 1 % of their release mass within a few days.
 
@@ -207,7 +207,7 @@ Window mean 142.6 µg/m³; top contributors over the window: industry_delhi_ncr 
 - **Version 2** added left-point hour means, the kernel, the 400-parcel rest_of_india budget and the met fast path, at a warm wall of 114.1 s, measured under heavier machine load.
 - **Version 3** changed to trapezoid hour means and faster terrain look-ups, at a warm wall of 53.5 s.
 
-## Measured data coverage (`server/vayu/clients/openaq.py`, Task 16)
+## Measured data coverage (`server/vayu/clients/openaq.py`)
 
 ### The CPCB gap in OpenAQ
 CPCB-provider PM2.5 in OpenAQ v3 runs to about October 2022 and starts again on 2025-02-18; dates in between return no measurements (all hours NaN, station count 0). The `caaqm` provider is not used: its Delhi sensors also end by 2022-10-31 and it would duplicate sites. Consequences:
