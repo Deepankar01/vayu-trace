@@ -2,7 +2,7 @@
  * Screen-space label declutter: greedy by priority, a label is shown only if its box overlaps no
  * box already accepted. Boxes depend on the city name and the camera only: the status line is
  * always sized for the WIDEST text it can show (`WORST_STATUS`), so a label accepted while its
- * status is short ("AQI 120") still fits when "smoke present · N h old" appears during playback,
+ * status is short ("model AQI 120") still fits when "smoke present · N h old" appears during playback,
  * and the result does not flicker (it is recomputed on map move/resize only).
  */
 
@@ -20,10 +20,10 @@ export interface LabelBox {
 const OFFSET_X = 11;
 const NAME_CHAR_W = 6.4;
 /** The longest status line `statusLine` can draw (AQI is capped at 500; ages stay under 1000 h). */
-export const WORST_STATUS = "AQI 500 · smoke present · 999 h old";
+export const WORST_STATUS = "model AQI 500 · smoke present · 999 h old";
 /** Average advance of the 10 px status font (system sans), px per character; slightly generous. */
 const STATUS_CHAR_W = 5.5;
-export const STATUS_W = Math.ceil(WORST_STATUS.length * STATUS_CHAR_W); // 35 chars -> 193 px
+export const STATUS_W = Math.ceil(WORST_STATUS.length * STATUS_CHAR_W); // 41 chars -> 226 px
 const ABOVE = 14;
 const BELOW = 14;
 const PAD = 2;

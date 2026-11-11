@@ -1,5 +1,5 @@
 /**
- * City markers and their labels: the name, then "AQI N" and, when smoke is present or on its way,
+ * City markers and their labels: the name, then "model AQI N" and, when smoke is present or on its way,
  * " · smoke present · N h old" / " · arrives +N h" (from the weighted fire contribution and the
  * 15 ug/m3 threshold of `arrival`). Marker colour is the CPCB category of the AQI.
  */
@@ -15,7 +15,7 @@ import { hexToRgba } from "./rgba";
 export interface CityLabel {
   /** The city name. */
   primary: string;
-  /** "AQI N" (rounded) or "AQI –". */
+  /** "model AQI N" (rounded) or "model AQI –": the simulated value, not a measurement. */
   aqiText: string;
   /** "smoke present · N h old" / "smoke present" / "arrives +N h", or null. */
   secondary: string | null;
@@ -71,7 +71,7 @@ function seriesFor(city: CityMeta, weights: Weights): Series {
 
 /**
  * The label at `hourIndex` (floored). AQI = `pm25ToAqi(rolling24h(cityTotals(...), h))`:
- * `aqiText` "AQI N" rounded or "AQI –". `secondary`: "smoke present · N h old" (N =
+ * `aqiText` "model AQI N" rounded or "model AQI –". `secondary`: "smoke present · N h old" (N =
  * `fire_age_h[h]` rounded; just "smoke present" if the age is null) when the weighted fire
  * contribution is >= 15 at h, "arrives +N h" when it first reaches 15 later, else null.
  */
@@ -80,7 +80,7 @@ export function cityLabel(city: CityMeta, hourIndex: number, weights: Weights): 
   const { totals, fire } = seriesFor(city, weights);
   const mean = rolling24h(totals, h);
   const aqi = mean == null ? null : pm25ToAqi(mean);
-  const aqiText = aqi == null ? "AQI –" : `AQI ${Math.round(aqi)}`;
+  const aqiText = aqi == null ? "model AQI –" : `model AQI ${Math.round(aqi)}`;
   let secondary: string | null = null;
   if (h >= 0 && h < fire.length) {
     const age = city.fire_age_h[h] ?? null;
@@ -91,7 +91,7 @@ export function cityLabel(city: CityMeta, hourIndex: number, weights: Weights): 
   return { primary: city.name, aqiText, secondary, color: aqiColor(aqi), aqi };
 }
 
-/** The label's second line as drawn: "AQI 312 · smoke present · 17 h old". */
+/** The label's second line as drawn: "model AQI 312 · smoke present · 17 h old". */
 export function statusLine(l: CityLabel): string {
   return l.secondary ? `${l.aqiText} · ${l.secondary}` : l.aqiText;
 }

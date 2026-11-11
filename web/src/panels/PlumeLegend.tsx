@@ -21,6 +21,8 @@ function rampGradient(): string {
   return `linear-gradient(90deg, ${stops.join(", ")})`;
 }
 const RAMP = rampGradient();
+export const CITY_NOTE = "City labels and markers: simulated";
+const Note = () => <div className="lg-note mute" data-testid="legend-note">{CITY_NOTE}</div>;
 
 export function PlumeLegend() {
   const compare = useApp((s) => s.compareBaseline);
@@ -38,6 +40,7 @@ export function PlumeLegend() {
           <span>{MINUS}{DIFF_SAT}</span><span>±{DIFF_DEAD}</span><span>+{DIFF_SAT}</span>
         </div>
         <div className="lg-ticks small"><span className="cool">lower than baseline</span><span className="warm">higher</span></div>
+        <Note />
       </div>
     );
   }
@@ -50,6 +53,7 @@ export function PlumeLegend() {
             <li key={b.name}><i style={{ background: b.color }} />{b.name}</li>
           ))}
         </ul>
+        <Note />
       </div>
     );
   }
@@ -61,6 +65,7 @@ export function PlumeLegend() {
       <div className="lg-ticks num pm">
         {PM_TICKS.map((t) => <span key={t} style={{ left: `${((t - 5) / 395) * 100}%` }}>{t}</span>)}
       </div>
+      <Note />
     </div>
   );
 }

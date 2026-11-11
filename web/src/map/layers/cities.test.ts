@@ -25,8 +25,8 @@ describe("cityLabel", () => {
     const l = cityLabel(c, 20, W);
     expect(l.primary).toBe("Kanpur");
     expect(l.secondary).toBe("arrives +9 h");
-    expect(l.aqiText).toBe(`AQI ${Math.round(pm25ToAqi(100))}`); // the AQI is still there
-    expect(statusLine(l)).toBe(`AQI ${Math.round(pm25ToAqi(100))} · arrives +9 h`);
+    expect(l.aqiText).toBe(`model AQI ${Math.round(pm25ToAqi(100))}`); // the AQI is still there
+    expect(statusLine(l)).toBe(`model AQI ${Math.round(pm25ToAqi(100))} · arrives +9 h`);
   });
 
   it("'smoke present · 17 h old' when the fire contribution is at or above 15 now", () => {
@@ -35,7 +35,7 @@ describe("cityLabel", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(100), fire_punjab: flat(10), firefc_punjab: flat(5) }, fire_age_h: age });
     const l = cityLabel(c, 30, W);
     expect(l.secondary).toBe("smoke present · 17 h old");
-    expect(l.aqiText).toBe(`AQI ${Math.round(pm25ToAqi(115))}`);
+    expect(l.aqiText).toBe(`model AQI ${Math.round(pm25ToAqi(115))}`);
   });
 
   it("'smoke present' alone when the age is unknown", () => {
@@ -47,9 +47,9 @@ describe("cityLabel", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(100), fire_punjab: flat(80) } });
     const l = cityLabel(c, 30, { ...W, fire_punjab: 0 });
     const aqi = pm25ToAqi(rolling24h(flat(100), 30)!);
-    expect(l.aqiText).toBe(`AQI ${Math.round(aqi)}`);
+    expect(l.aqiText).toBe(`model AQI ${Math.round(aqi)}`);
     expect(l.secondary).toBeNull();
-    expect(statusLine(l)).toBe(`AQI ${Math.round(aqi)}`);
+    expect(statusLine(l)).toBe(`model AQI ${Math.round(aqi)}`);
     expect(l.aqi).toBeCloseTo(aqi);
     expect(l.color).toBe(aqiColor(aqi));
   });
@@ -57,27 +57,27 @@ describe("cityLabel", () => {
   it("AQI uses the weighted total (fires included)", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(50), fire_punjab: flat(10) } });
     const l = cityLabel(c, 30, W);
-    expect(l.aqiText).toBe(`AQI ${Math.round(pm25ToAqi(60))}`);
+    expect(l.aqiText).toBe(`model AQI ${Math.round(pm25ToAqi(60))}`);
   });
 
-  it("'AQI –' and the mute colour while fewer than 16 hours are available", () => {
+  it("'model AQI –' and the mute colour while fewer than 16 hours are available", () => {
     const l = cityLabel(city(), 5, W);
-    expect(l.aqiText).toBe("AQI –");
+    expect(l.aqiText).toBe("model AQI –");
     expect(l.secondary).toBeNull();
     expect(l.aqi).toBeNull();
     expect(l.color).toBe(aqiColor(null));
   });
 
-  it("missing totals give 'AQI –'", () => {
+  it("missing totals give 'model AQI –'", () => {
     const c = city({ by_tag: { vehicles_uttar_pradesh: flat(null), fire_punjab: flat(0) } });
-    expect(cityLabel(c, 30, W).aqiText).toBe("AQI –");
+    expect(cityLabel(c, 30, W).aqiText).toBe("model AQI –");
   });
 
   it("the last hour: no later crossing, so the AQI line", () => {
     const c = city();
     const l = cityLabel(c, N - 1, W);
     expect(l.secondary).toBeNull();
-    expect(l.aqiText).toMatch(/^AQI \d+$/);
+    expect(l.aqiText).toMatch(/^model AQI \d+$/);
   });
 
   it("a fractional hour is floored", () => {

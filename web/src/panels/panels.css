@@ -1476,3 +1476,7 @@ button:disabled {
   color: var(--text);
   border-color: rgba(255, 255, 255, 0.18);
 }
+.lg-note {
+  font-size: 10px;
+  margin-top: 5px;
+}
