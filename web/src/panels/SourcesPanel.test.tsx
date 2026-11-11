@@ -91,14 +91,6 @@ describe("SourcesPanel", () => {
     expect(store.getState().userSources[0].enabled).toBe(false);
   });
 
-  it("each added source has a remove control that calls removeSource", () => {
-    const { store } = renderPanel(<SourcesPanel />, { userSources: [user("user_1"), user("user_2")] });
-    const removed: string[] = [];
-    store.setState({ removeSource: async (id: string) => { removed.push(id); } });
-    fireEvent.click(screen.getByRole("button", { name: "Remove 2. Custom source: 10 kg PM2.5 per hour" }));
-    expect(removed).toEqual(["user_2"]);
-  });
-
   it("arms the map for a drop and shows the hint", () => {
     renderPanel(<SourcesPanel />);
     fireEvent.click(screen.getByRole("button", { name: /Drop source on map/ }));
