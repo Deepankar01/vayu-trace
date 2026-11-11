@@ -6,6 +6,8 @@ EDGAR sectors that make up each model sector and split by region. Cells whose ce
 India are dropped. EDGAR has no road or construction dust field and the India-specific inventory
 that has one is access-restricted, so the `dust` grids are zero and flagged (see docs/data-notes.md).
 """
+import hashlib
+import json
 from pathlib import Path
 
 import netCDF4
@@ -32,11 +34,13 @@ BASE_URL = "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/EDGAR/datasets/v81_
 SOURCE = "EDGAR v8.1 air pollutants (JRC), PM2.5, 0.1 degree annual sector grids"
 LICENCE = "CC BY 4.0"
 
-# Model sector -> EDGAR sector codes (TRO road transport; ENE power; IND manufacturing combustion;
-# REF_TRF refineries and transformation; RCO energy for buildings).
+# Model sector -> EDGAR sector codes: TRO road transport; ENE power; IND manufacturing combustion;
+# REF_TRF refineries and transformation; NMM non-metallic minerals (cement, lime, glass, bricks);
+# IRO iron and steel; NFE non-ferrous metals; CHE chemical processes; RCO energy for buildings.
+# Industrial process sectors are included so industry covers directly emitted process PM2.5.
 EDGAR_SECTORS = {
     "vehicles": ("TRO",),
-    "industry": ("ENE", "IND", "REF_TRF"),
+    "industry": ("ENE", "IND", "REF_TRF", "NMM", "IRO", "NFE", "CHE"),
     "residential": ("RCO",),
 }
 # No road/construction dust field is available: EDGAR has none, and the India inventory with a
@@ -44,7 +48,7 @@ EDGAR_SECTORS = {
 DUST_AVAILABLE = False
 
 HOURS_PER_YEAR = 365 * 24  # 2022 is not a leap year
-_TONNES = {"tonnes", "tonne", "mg"}  # 1 Mg = 1 tonne
+_TONNES = {"Tonnes", "tonnes", "t", "Mg"}  # case-sensitive: "mg" is milligram, not megagram
 _FLUX = {"kgm-2s-1", "kg/m2/s", "kgm^-2s^-1"}
 
 
@@ -101,22 +105,22 @@ def read_grid(path: Path) -> np.ndarray:
         if len(names) != 1:
             raise ValueError(f"{path.name}: expected one (lat, lon) variable, found {names}")
         var = ds[names[0]]
-        units = str(getattr(var, "units", "")).replace(" ", "").lower()
-        if units not in _TONNES | _FLUX:
-            raise ValueError(f"{path.name}: unsupported units {var.units!r}")
+        raw_units = str(getattr(var, "units", ""))
+        is_tonnes = raw_units in _TONNES
+        if not is_tonnes and raw_units.replace(" ", "").lower() not in _FLUX:
+            raise ValueError(f"{path.name}: unsupported units {raw_units!r}")
         jy, iy = _axis_index(lat, LAT_MIN, NY, "lat")
         jx, ix = _axis_index(lon, LON_MIN, NX, "lon")
         block = np.ma.filled(var[jy.min() : jy.max() + 1, jx.min() : jx.max() + 1], np.nan)
     block = np.nan_to_num(block[np.ix_(jy - jy.min(), jx - jx.min())].astype(np.float64))
     out = np.zeros((NY, NX))
     out[np.ix_(iy, ix)] = block
-    if units in _TONNES:
+    if is_tonnes:
         return out * 1000.0 / HOURS_PER_YEAR
     return out * cell_area_m2()[:, None] * 3600.0
 
 
-def sector_grids() -> dict[str, np.ndarray]:
-    """Domain grids (kg/h, all cells) for vehicles, industry and residential from the files."""
+def _require_files() -> None:
     folder = _inventory_dir()
     missing = [n for n in source_files() if not (folder / n).is_file()]
     if missing:
@@ -124,6 +128,12 @@ def sector_grids() -> dict[str, np.ndarray]:
             f"EDGAR inventory files missing in {folder}: {', '.join(missing)}. "
             "Run `uv run python scripts/fetch_inventory.py` from the server directory."
         )
+
+
+def sector_grids() -> dict[str, np.ndarray]:
+    """Domain grids (kg/h, all cells) for vehicles, industry and residential from the files."""
+    _require_files()
+    folder = _inventory_dir()
     return {
         sector: sum(read_grid(folder / _file_name(code)) for code in codes)
         for sector, codes in EDGAR_SECTORS.items()
@@ -144,17 +154,32 @@ def split_by_region(grids: dict[str, np.ndarray]) -> Emissions:
     return em
 
 
+def _cache_key() -> str:
+    """Hash of everything the cached grids depend on: sector mapping, conversion, domain grid and
+    each source file's size and modification time."""
+    folder = _inventory_dir()
+    stats = [(n, (folder / n).stat().st_size, (folder / n).stat().st_mtime_ns) for n in source_files()]
+    spec = [EDGAR_SECTORS, HOURS_PER_YEAR, (NY, NX, LAT_MIN, LON_MIN, CELL), stats]
+    return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
+
+
 def inventory_emissions() -> Emissions:
-    """The 24 baseline tags in kg PM2.5 per hour, from the cached .npz (built on first use)."""
-    cache = _cache_path()
+    """The 24 baseline tags in kg PM2.5 per hour, from the cached .npz.
+
+    The cache is rebuilt whenever its key (see `_cache_key`) no longer matches. The source files
+    must be present even when a cache exists, since the key cannot be verified without them.
+    """
+    _require_files()
+    key, cache = _cache_key(), _cache_path()
+    grids = None
     if cache.is_file():
         with np.load(cache) as z:
-            grids = {s: z[s] for s in EDGAR_SECTORS}
-    else:
+            if "key" in z.files and str(z["key"]) == key and set(EDGAR_SECTORS) <= set(z.files):
+                grids = {s: z[s] for s in EDGAR_SECTORS}
+    if grids is None:
         grids = sector_grids()
-        cache.parent.mkdir(parents=True, exist_ok=True)
         tmp = cache.with_name(cache.name + ".tmp.npz")
-        np.savez_compressed(tmp, **grids)
+        np.savez_compressed(tmp, key=np.array(key), **grids)
         tmp.replace(cache)
     return split_by_region(grids)
 

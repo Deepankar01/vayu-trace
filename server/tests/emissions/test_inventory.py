@@ -3,7 +3,17 @@ import numpy as np
 import pytest
 
 from vayu import config
-from vayu.domain import NX, NY, REGIONS, SECTORS, TAGS, cell_area_m2, india_mask, region_mask
+from vayu.domain import (
+    NX,
+    NY,
+    REGIONS,
+    SECTORS,
+    TAGS,
+    cell_area_m2,
+    cell_index,
+    india_mask,
+    region_mask,
+)
 from vayu.emissions import inventory
 
 HOURS_PER_YEAR = 8760
@@ -63,11 +73,30 @@ def test_read_grid_orientation_and_alignment(tmp_path):
         inventory.read_grid(partial)
 
 
-def test_unknown_units_rejected(tmp_path):
+def test_hot_cell_lands_at_its_own_cell_not_transposed(tmp_path):
+    values = np.zeros((400, 400), dtype=np.float32)
+    values[286, 172] = 8.76  # file lat 28.65, lon 77.25: the centre of the cell holding (77.2, 28.6)
+    for descending in (False, True):
+        path = tmp_path / f"hot_{descending}.nc"
+        write_nc(path, values, "Tonnes", descending_lat=descending)
+        grid = inventory.read_grid(path)
+        ix, iy = cell_index(77.2, 28.6)
+        assert grid[iy, ix] == pytest.approx(1.0)
+        assert np.count_nonzero(grid) == 1
+
+
+@pytest.mark.parametrize("units", ["ppm", "mg", "Mg/s"])
+def test_unknown_units_rejected(tmp_path, units):
     bad = tmp_path / "bad.nc"
-    write_nc(bad, window(1.0), "ppm")
+    write_nc(bad, window(1.0), units)
     with pytest.raises(ValueError, match="units"):
         inventory.read_grid(bad)
+
+
+def test_megagram_units_accepted(tmp_path):
+    ok = tmp_path / "ok.nc"
+    write_nc(ok, window(8.76), "Mg")
+    np.testing.assert_allclose(inventory.read_grid(ok), 1.0, rtol=1e-6)
 
 
 def test_split_by_region_conserves_mass():
@@ -110,16 +139,54 @@ def install_fake_inventory(tmp_path):
         write_nc(folder / name, window(8.76 * (i + 1)), "Tonnes")
 
 
-def test_cache_is_built_once_and_reused(tmp_path):
+def total(em, tag):
+    return em.hour(tag, 0)[2].sum()
+
+
+def test_cache_is_reused_while_key_is_valid(tmp_path):
     install_fake_inventory(tmp_path)
     first = inventory.inventory_emissions()
-    for f in (config.data_dir() / "inventory").glob("*.nc"):
-        f.unlink()
-    second = inventory.inventory_emissions()  # served from the .npz, raw files gone
-    assert list(config.data_dir().rglob("*.npz"))
+    cache = next(config.data_dir().rglob("*.npz"))
+    stamp = cache.stat().st_mtime_ns
+    second = inventory.inventory_emissions()
+    assert cache.stat().st_mtime_ns == stamp  # not rewritten
     for tag in first.tags:
         for a, b in zip(first.hour(tag, 0), second.hour(tag, 0)):
             np.testing.assert_array_equal(a, b)
+
+
+def test_cache_rebuilt_when_source_file_changes(tmp_path):
+    install_fake_inventory(tmp_path)
+    before = total(inventory.inventory_emissions(), "vehicles_rest_of_india")
+    path = config.data_dir() / "inventory" / inventory.source_files()[0]  # the TRO file
+    write_nc(path, window(8.76 * 10), "Tonnes")
+    after = total(inventory.inventory_emissions(), "vehicles_rest_of_india")
+    assert after == pytest.approx(before * 10 / 1)  # TRO was 8.76 (x1), now x10
+
+
+def test_cache_rebuilt_when_sector_mapping_changes(tmp_path, monkeypatch):
+    install_fake_inventory(tmp_path)
+    full = total(inventory.inventory_emissions(), "industry_rest_of_india")
+    monkeypatch.setattr(inventory, "EDGAR_SECTORS", {**inventory.EDGAR_SECTORS, "industry": ("ENE",)})
+    em = inventory.inventory_emissions()
+    assert total(em, "industry_rest_of_india") < full
+    assert len(em.tags) == 24
+
+
+def test_cache_rebuilt_when_conversion_changes(tmp_path, monkeypatch):
+    install_fake_inventory(tmp_path)
+    before = total(inventory.inventory_emissions(), "residential_rest_of_india")
+    monkeypatch.setattr(inventory, "HOURS_PER_YEAR", inventory.HOURS_PER_YEAR * 2)
+    assert total(inventory.inventory_emissions(), "residential_rest_of_india") == pytest.approx(before / 2)
+
+
+def test_valid_cache_without_source_files_raises(tmp_path):
+    install_fake_inventory(tmp_path)
+    inventory.inventory_emissions()
+    for f in (config.data_dir() / "inventory").glob("*.nc"):
+        f.unlink()
+    with pytest.raises(inventory.InventoryNotFound, match="scripts/fetch_inventory.py"):
+        inventory.inventory_emissions()
 
 
 def test_missing_files_raise_with_fetch_instruction():
