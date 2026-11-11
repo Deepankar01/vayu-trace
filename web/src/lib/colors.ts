@@ -22,11 +22,13 @@ const STOPS: { v: number; rgb: [number, number, number] }[] = [
 ];
 const MAX_ALPHA = 215;
 
-/** Colour for a dry PM2.5 concentration; fully transparent at or below 5 ug/m3. */
+/** Colour for a dry PM2.5 concentration; fully transparent at or below 5 ug/m3. Alpha rises as
+ *  the square root of (v - 5) / 395, from 0 to 215 at 400. */
 export function pm25Ramp(v: number): Rgba {
   if (!(v > 5)) return [0, 0, 0, 0];
   const t = Math.min(v, 400);
-  const alpha = Math.round((MAX_ALPHA * (t - 5)) / 395);
+  // square-root curve: typical 40-150 ug/m3 plumes read clearly; still 0 at 5 and 215 at 400+
+  const alpha = Math.round(MAX_ALPHA * Math.sqrt(Math.min(1, Math.max(0, (t - 5) / 395))));
   let i = 0;
   while (i < STOPS.length - 2 && t > STOPS[i + 1].v) i++;
   const a = STOPS[i];

@@ -96,11 +96,19 @@ export function statusLine(l: CityLabel): string {
   return l.secondary ? `${l.aqiText} · ${l.secondary}` : l.aqiText;
 }
 
-/** Labels shown at low zoom; every label from LABEL_ALL_ZOOM. */
-export const PRIORITY_CITIES: ReadonlySet<string> = new Set([
+/** Labels shown at low zoom (in priority order); every label from LABEL_ALL_ZOOM. */
+export const PRIORITY_ORDER = [
   "delhi", "lucknow", "kanpur", "patna", "varanasi", "amritsar", "ludhiana", "jaipur", "mumbai", "kolkata",
   "chennai", "bengaluru", "hyderabad", "ahmedabad",
-]);
+] as const;
+export const PRIORITY_CITIES: ReadonlySet<string> = new Set(PRIORITY_ORDER);
+
+/** Declutter priority (lower wins): the selected city, then PRIORITY_ORDER, then the rest. */
+export function labelPriority(cityId: string, index: number, selected: string | null): number {
+  if (cityId === selected) return -1;
+  const p = (PRIORITY_ORDER as readonly string[]).indexOf(cityId);
+  return p >= 0 ? p : PRIORITY_ORDER.length + index;
+}
 export const LABEL_ALL_ZOOM = 5.5;
 /** Delhi's NCR neighbours sit within a few pixels of Delhi until well zoomed in. */
 export const NCR_SATELLITES: ReadonlySet<string> = new Set(["gurugram", "noida", "ghaziabad", "faridabad"]);
@@ -118,8 +126,8 @@ export interface CityDatum {
 
 const FONT = '-apple-system, "Inter", "Segoe UI", sans-serif';
 const TEXT: [number, number, number, number] = [0xe8, 0xea, 0xf0, 255];
-const MUTE: [number, number, number, number] = [0xa3, 0xab, 0xbd, 255]; // --mute, lifted a touch for the halo
-const HALO: [number, number, number, number] = [0x0b, 0x0e, 0x13, 200];
+const MUTE: [number, number, number, number] = [0xc9, 0xcf, 0xdd, 255]; // lighter than --mute: it sits on the plume
+const HALO: [number, number, number, number] = [0x0b, 0x0e, 0x13, 225];
 // Printable ASCII plus the label punctuation ("·", "–"). Not "auto": in deck.gl 9.4 the auto set
 // did not reach the font atlas and these two glyphs rendered blank.
 const CHARACTERS = Array.from({ length: 95 }, (_, i) => String.fromCharCode(32 + i)).join("") + "·–";
@@ -132,11 +140,15 @@ export interface CityLayerProps {
   /** While a drop is armed, map clicks go to the drop handler: markers are not pickable. */
   pickable: boolean;
   onSelect: (id: string) => void;
+  /** Labels that survived the screen-space declutter (all candidates when absent). */
+  shown?: ReadonlySet<string>;
 }
 
-export function cityLayers({ data, selected, zoom, pickable, onSelect }: CityLayerProps) {
+export function cityLayers({ data, selected, zoom, pickable, onSelect, shown }: CityLayerProps) {
   const sel = data.filter((d) => d.city.id === selected);
-  const labelled = data.filter((d) => d.city.id === selected || showLabel(d.city.id, zoom));
+  const labelled = data.filter(
+    (d) => d.city.id === selected || (showLabel(d.city.id, zoom) && (!shown || shown.has(d.city.id))),
+  );
   const pos = (d: CityDatum) => [d.city.lon, d.city.lat] as [number, number];
   return [
     new ScatterplotLayer<CityDatum>({
@@ -186,7 +198,7 @@ export function cityLayers({ data, selected, zoom, pickable, onSelect }: CityLay
       getAlignmentBaseline: "bottom",
       getPixelOffset: [11, 1],
       fontSettings: SDF,
-      outlineWidth: 3,
+      outlineWidth: 4,
       outlineColor: HALO,
       characterSet: CHARACTERS,
     }),
@@ -204,7 +216,7 @@ export function cityLayers({ data, selected, zoom, pickable, onSelect }: CityLay
       getAlignmentBaseline: "top",
       getPixelOffset: [11, 2],
       fontSettings: SDF,
-      outlineWidth: 3,
+      outlineWidth: 4,
       outlineColor: HALO,
       characterSet: CHARACTERS,
       updateTriggers: { getText: [labelled.map((d) => statusLine(d.label)).join("|")] },

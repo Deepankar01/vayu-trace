@@ -12,7 +12,8 @@ import { errorMessage, isAbort } from "../api/client";
 import type { Fire, Meta } from "../api/types";
 import type { Weights } from "../lib/compose";
 import type { AppState, AppStore } from "../state/store";
-import { LABEL_ALL_ZOOM, LABEL_NCR_ZOOM, cityLabel, cityLayers, type CityDatum } from "./layers/cities";
+import { declutterLabels } from "./layers/labelDeclutter";
+import { LABEL_ALL_ZOOM, LABEL_NCR_ZOOM, cityLabel, labelPriority, showLabel, cityLayers, type CityDatum } from "./layers/cities";
 import { fireLayers, prepareFires, windowData, type PreparedFires } from "./layers/fires";
 import { pathFetchDue, pathLayer, type PathFetched } from "./layers/path";
 import { PLUME_ROWS, colorizeInto, makeImageData, plumeLayer, type PlumeMode } from "./layers/plume";
@@ -29,6 +30,10 @@ export interface SceneEnv {
   zoom: number;
   armedForDrop: boolean;
   device: Device | null;
+  /** lon/lat to screen pixels (null before the map is ready). */
+  project: ((lonLat: [number, number]) => [number, number]) | null;
+  /** Bumped when the camera settles (moveend): label boxes are recomputed then. */
+  viewVersion: number;
 }
 
 /** The plume mode the store's toggles ask for; null when no plume is drawn. */
@@ -93,6 +98,7 @@ export class MapScene {
     users: new Slot<Layer>(),
     cityData: new Slot<CityDatum[]>(),
     cities: new Slot<Layer[]>(),
+    shown: new Slot<Set<string>>(),
   };
   private windLayerNow: Layer | null = null;
   private last: Layer[] | null = null;
@@ -337,13 +343,27 @@ export class MapScene {
     });
     const showAll = (env.zoom >= LABEL_ALL_ZOOM ? 1 : 0) + (env.zoom >= LABEL_NCR_ZOOM ? 1 : 0); // label tier
     const select = this.store.getState().selectCity;
-    return this.slots.cities.update([this.slots.cityData.value, s.selectedCity, showAll, env.armedForDrop], () =>
+    // which labels fit: depends on the camera and names only, not on the hour (stable in playback)
+    this.slots.shown.update([meta.cities, env.viewVersion, s.selectedCity, env.project], () => {
+      if (!env.project) return null;
+      const project = env.project;
+      return declutterLabels(
+        meta.cities
+          .filter((c) => c.id === s.selectedCity || showLabel(c.id, env.zoom))
+          .map((c, i) => {
+            const [x, y] = project([c.lon, c.lat]);
+            return { id: c.id, x, y, name: c.name, priority: labelPriority(c.id, i, s.selectedCity) };
+          }),
+      );
+    });
+    return this.slots.cities.update([this.slots.cityData.value, s.selectedCity, showAll, env.armedForDrop, this.slots.shown.value], () =>
       cityLayers({
         data: this.slots.cityData.value ?? [],
         selected: s.selectedCity,
         zoom: env.zoom,
         pickable: !env.armedForDrop,
         onSelect: (id) => select(id),
+        shown: this.slots.shown.value ?? undefined,
       }),
     );
   }

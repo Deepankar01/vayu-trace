@@ -16,8 +16,8 @@ const MIN_ALPHA = 0.15;
 
 const GLOW_RGB = [0xff, 0x5a, 0x2b];
 // Additive: thousands of overlapping detections in Punjab add up, so each one is faint.
-const GLOW_ALPHA = 0.16;
-const CORE_ALPHA = 0.5;
+const GLOW_ALPHA = 0.12;
+const CORE_ALPHA = 0.42;
 const CORE_RGB = [0xff, 0xb8, 0x80]; // between the mockup's #ffd9a8 core and the fire red: reads as embers, not a white blob
 
 export function fireRadiusPx(frpMw: number): number {

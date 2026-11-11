@@ -27,6 +27,7 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
   const armed = useDropStore((s) => s.armedForDrop);
   const env = useRef<SceneEnv>({
     ready: false, flatBeforeId: undefined, zoom: INITIAL_VIEW.zoom, armedForDrop: false, device: null,
+    project: null, viewVersion: 0,
   });
   env.current.armedForDrop = armed;
   const sceneRef = useRef<MapScene | null>(null);
@@ -60,10 +61,20 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
     // layers beneath them keeps the plume under both the India boundaries and the place names.
     env.current.flatBeforeId = LAYER_IDS.stateLines;
     env.current.zoom = map.getZoom();
+    env.current.project = (ll) => {
+      const p = map.project(ll);
+      return [p.x, p.y];
+    };
     env.current.ready = true;
     map.on("zoom", () => {
       env.current.zoom = map.getZoom();
     });
+    const settle = () => {
+      env.current.zoom = map.getZoom();
+      env.current.viewVersion++;
+    };
+    map.on("moveend", settle);
+    map.on("resize", settle);
     map.on("click", (e) => {
       if (!useDropStore.getState().armedForDrop) return;
       latest.current.onDropPoint?.(e.lngLat.lng, e.lngLat.lat);

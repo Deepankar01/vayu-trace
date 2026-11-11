@@ -19,6 +19,14 @@ describe("pm25Ramp", () => {
     expect(pm25Ramp(600)[3]).toBe(215);
   });
 
+  it("alpha follows a square-root curve: 215 * sqrt((v - 5) / 395)", () => {
+    expect(pm25Ramp(40)[3]).toBe(Math.round(215 * Math.sqrt(35 / 395))); // 64
+    expect(pm25Ramp(40)[3]).toBe(64);
+    expect(pm25Ramp(120)[3]).toBe(116);
+    expect(pm25Ramp(250)[3]).toBe(169);
+    expect(pm25Ramp(5.001)[3]).toBeLessThanOrEqual(1);
+  });
+
   it("saturates at the 400+ colour for Infinity", () => {
     expect(pm25Ramp(Infinity)).toEqual([0x5a, 0x0f, 0x1c, 215]);
   });
