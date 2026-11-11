@@ -9,17 +9,18 @@ EPISODE ?= 2025-11-03 2025-11-09
 setup:
 	cd server && uv sync --extra dev
 	npm --prefix web ci
-	@cd server && uv run python -c 'import sys; from vayu.emissions import inventory as i; sys.exit(0 if all((i._inventory_dir() / f).is_file() for f in i.source_files()) else 1)' \
-		&& echo "EDGAR inventory present" \
-		|| uv run python scripts/fetch_inventory.py
+	cd server && uv run python scripts/fetch_inventory.py --if-missing
 
-# API and Vite together; Ctrl-C stops both.
+# API and Vite together; Ctrl-C stops both. If either one exits (e.g. its port is busy), the
+# other is stopped and make fails.
 dev:
-	@trap 'kill 0' INT TERM EXIT; \
-	(cd server && uv run uvicorn vayu.api:app --port $(API_PORT)) & \
-	VAYU_API_PORT=$(API_PORT) npm --prefix web run dev -- --port $(WEB_PORT) & \
+	@stop() { trap - INT TERM EXIT; kill $$api $$web 2>/dev/null; wait 2>/dev/null; }; \
+	trap 'stop; exit 130' INT TERM; trap stop EXIT; \
+	(cd server && exec uv run uvicorn vayu.api:app --port $(API_PORT)) & api=$$!; \
+	(cd web && VAYU_API_PORT=$(API_PORT) exec ./node_modules/.bin/vite --port $(WEB_PORT)) & web=$$!; \
 	sleep 2; echo ""; echo "  Open http://localhost:$(WEB_PORT)  (API on port $(API_PORT); Ctrl-C stops both)"; echo ""; \
-	wait
+	while kill -0 $$api 2>/dev/null && kill -0 $$web 2>/dev/null; do sleep 1; done; \
+	echo "make dev: the API or the web server exited (port in use?); stopping the other" >&2; exit 1
 
 test:
 	cd server && uv run --extra dev pytest
