@@ -11,6 +11,7 @@ import respx
 
 from vayu.clients import openmeteo
 from vayu.errors import UpstreamError
+from vayu.met import MetField
 
 FIX = Path(__file__).parent.parent / "fixtures" / "openmeteo"
 ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"
@@ -233,3 +234,73 @@ def test_cams_nulls_are_nan():
         m.get(url__startswith=CAMS).respond(json=body)
         pm = openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2021, 1, 1, tzinfo=UTC), 2)
     assert np.isnan(pm[0]) and pm[1] == 3.0
+
+
+# --- the real forecast recording (2026-11-11: Delhi, Ludhiana, Patna; past_days=1, forecast_days=2)
+
+FC_START = datetime(2026, 11, 10, tzinfo=UTC)  # recorded on 2026-11-11, so past_days=1 starts here
+FC_HOURS = 72
+
+
+def recorded_forecast_body() -> list:
+    return json.loads((FIX / "forecast.json").read_text())
+
+
+def test_recorded_forecast_shape_and_alignment():
+    body = recorded_forecast_body()
+    assert isinstance(body, list) and len(body) == 3  # several coordinates: a list of objects
+    for item in body:
+        hourly = item["hourly"]
+        assert item["timezone"] == "GMT" and item["utc_offset_seconds"] == 0
+        assert len(hourly["time"]) == FC_HOURS
+        assert hourly["time"][0] == "2026-11-10T00:00"  # midnight UTC of today - past_days
+        assert hourly["time"][-1] == "2026-11-12T23:00"
+        assert item["hourly_units"]["wind_speed_10m"] == "m/s"  # wind_speed_unit=ms honoured
+        assert item["hourly_units"]["wind_speed_100m"] == "m/s"
+    out = openmeteo._parse_batch(body, FC_START, FC_HOURS)
+    for name in VARS:
+        assert out[name].shape == (FC_HOURS, 3) and out[name].dtype == np.float32
+    # first hour lands in row 0, last in the final row, nothing dropped or shifted
+    assert out["wind_speed_10m"][0, 0] == pytest.approx(body[0]["hourly"]["wind_speed_10m"][0])
+    assert out["wind_speed_10m"][-1, 2] == pytest.approx(body[2]["hourly"]["wind_speed_10m"][-1])
+    for name in VARS:
+        assert np.isfinite(out[name]).all(), name
+
+
+def test_recorded_forecast_winds_and_blh_are_physical():
+    out = openmeteo._parse_batch(recorded_forecast_body(), FC_START, FC_HOURS)
+    for name in ("wind_speed_10m", "wind_speed_100m"):
+        assert (out[name] >= 0).all() and (out[name] < 40).all()  # m/s, not km/h
+    for name in ("wind_direction_10m", "wind_direction_100m"):
+        assert (out[name] >= 0).all() and (out[name] <= 360).all()
+    assert (out["relative_humidity_2m"] >= 0).all() and (out["relative_humidity_2m"] <= 100).all()
+    # the forecast feed does carry a boundary layer height (unlike the archive), and it has a day
+    # cycle: shallow at night, over 1 km by afternoon
+    blh = out["boundary_layer_height"]
+    assert (blh > 0).all() and blh.max() > 1000 and blh.min() < 200
+
+
+def test_recorded_forecast_through_fetch_met(mock):
+    """The production path: fetch_met -> forecast URL -> batches -> lattice; every lattice point
+    gets the recorded reply (cycled), so shapes and the mixing-height source are real."""
+    recorded = recorded_forecast_body()
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        n = len(request.url.params["latitude"].split(","))
+        return httpx.Response(200, json=[recorded[i % 3] for i in range(n)])
+
+    mock.get(url__startswith=FORECAST).mock(side_effect=reply)
+    raw = openmeteo.fetch_met(FC_START, FC_HOURS, NOW)
+    params = mock.calls[0].request.url.params
+    assert params["past_days"] == "1" and params["forecast_days"] == "2"
+    assert {str(c.request.url).split("?")[0] for c in mock.calls} == {FORECAST}  # no archive call
+    for name in VARS:
+        assert raw.variables[name].shape == (FC_HOURS, 33, 33)
+        assert np.isfinite(raw.variables[name]).all(), name
+    # lattice index 0 is the 1st point of the 1st batch -> recorded object 0, first hour
+    assert raw.variables["wind_speed_10m"][0, 0, 0] == pytest.approx(
+        recorded[0]["hourly"]["wind_speed_10m"][0])
+
+    field = MetField(raw)
+    assert field.blh_estimated is False  # mixing height came from the feed, not the estimate
+    assert np.isfinite(field.grid(0)["u"]).all()
