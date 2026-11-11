@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -43,16 +44,26 @@ from vayu.clients.openaq import city_pm25
 from vayu.clients.openmeteo import fetch_cams_pm25, fetch_met
 from vayu.constants import FIRE_SCALING_DEFAULT, MET_STEP_DEG
 from vayu.domain import CELL, LAT_MIN, LON_MIN, NX, NY, TAGS
-from vayu.emissions.dropped import KINDS, dropped_emissions
+from vayu.emissions.dropped import FIREWORKS_SIZE_NAMES, KINDS, dropped_emissions
 from vayu.emissions.inventory import inventory_notes
 from vayu.encode import HAZE, encode_frame
 from vayu.errors import UpstreamError
 from vayu.met import NLAT, NLON, MetField, MetRaw, lattice
 from vayu.receptors import USER_COLOR, back_trajectory, city_region, city_series
-from vayu.sim.run import RunResult, load_run, run_date, simulate
+from vayu.sim.run import (
+    PARTICLES_PER_TAG_HOUR,
+    RunResult,
+    load_run,
+    parcels_per_tag_hour,
+    run_date,
+    simulate,
+)
 from vayu.terrain import elevation
 
 log = logging.getLogger("vayu.api")
+# httpx logs every request URL at INFO, and the FIRMS key travels in its URL path
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 MIN_DATE = date(2018, 4, 1)  # confirmed in Task 16
 MAX_USER_SOURCES = 5
@@ -63,6 +74,12 @@ SHARE_UNCERTAINTY_PP = {"default": 10, "delhi": 5}
 # tags. Its identity affects only the parcel budget (100 per hour for a non rest_of_india sector
 # tag) and fire-age bookkeeping (none for a sector tag); the field is then served as `user_N`.
 SIM_TAG = "vehicles_delhi_ncr"
+_SIM = next((t for t in TAGS if t.id == SIM_TAG), None)
+if _SIM is None or _SIM.kind != "sector" or (
+        parcels_per_tag_hour(SIM_TAG) != PARTICLES_PER_TAG_HOUR):
+    raise RuntimeError(
+        f"SIM_TAG {SIM_TAG!r} must be a catalogue sector tag with the default parcel budget "
+        f"({PARTICLES_PER_TAG_HOUR} per hour); pick another stand-in tag for dropped sources")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _USER = re.compile(r"user_[1-9]\d*")
 
@@ -126,8 +143,15 @@ def _series(a) -> list[float | None]:
             for x in np.asarray(a, dtype=float).ravel()]
 
 
-def _nonzero(values) -> bool:
-    return any(v for v in values if v is not None)
+def _json(content, status_code: int = 200) -> CleanJSONResponse:
+    """Every route returns this, so FastAPI's jsonable_encoder (which rejects numpy values)
+    never runs and `clean` sees the raw content."""
+    return CleanJSONResponse(content, status_code=status_code)
+
+
+def _all_zero(values) -> bool:
+    """True only for a series of exact zeros; a null (missing) value keeps the series."""
+    return all(v == 0 for v in values)
 
 
 def _write_json(path: Path, obj) -> None:
@@ -137,7 +161,10 @@ def _write_json(path: Path, obj) -> None:
 
 
 class _Rebuilt(Exception):
-    def __init__(self, build_id: str):
+    """The build a request refers to is gone: superseded (`build_id` is the current one) or
+    expired with nothing current (`build_id` None)."""
+
+    def __init__(self, build_id: str | None):
         self.build_id = build_id
 
 
@@ -161,6 +188,7 @@ class _Build:
         self._extras: dict | None = None
         self._users: dict[str, dict] | None = None
         self._user_runs: dict[str, RunResult] = {}
+        self._reserved: set[str] = set()  # user tags being simulated
 
     @property
     def extras_dir(self) -> Path:
@@ -193,6 +221,7 @@ class _State:
         self.status: dict[date, _Status] = {}
         self.builds: OrderedDict[str, _Build] = OrderedDict()
         self._elev: np.ndarray | None = None
+        self._elev_lock = threading.Lock()  # never the status lock: polling must not wait on I/O
 
     def set_status(self, day: date, status: str, progress: float | None = None,
                    stage: str | None = None, error: str | None = None) -> None:
@@ -213,7 +242,7 @@ class _State:
             return b
 
     def elev(self) -> np.ndarray:
-        with self.lock:
+        with self._elev_lock:
             if self._elev is None:
                 self._elev = elevation()
             return self._elev
@@ -243,6 +272,8 @@ def _resolve(run_id: str, build: str | None) -> _Build:
     day = _parse_day(run_id, now)
     run = load_run(day, now)
     if run is None:
+        if build is not None:
+            raise _Rebuilt(None)
         raise HTTPException(404, f"no ready run for {day}; POST /api/runs to build it")
     if build is not None and build != run.run_id:
         raise _Rebuilt(run.run_id)
@@ -265,8 +296,10 @@ def _upstream(exc: UpstreamError) -> HTTPException:
     return HTTPException(502, _scrub(f"{exc.service}: {exc.message}"))
 
 
-def _log_exception(message: str) -> None:
-    log.error("%s\n%s", _scrub(message), _scrub(traceback.format_exc()))
+def _log_exception(message: str, exc: BaseException | None = None) -> None:
+    trace = (traceback.format_exc() if exc is None
+             else "".join(traceback.format_exception(exc)))
+    log.error("%s\n%s", _scrub(message), _scrub(trace))
 
 
 # --- extras: per-city series and fires ---
@@ -303,7 +336,7 @@ def _extras(b: _Build) -> dict:
         for cid, s in series.items():
             by_tag = {t: _series(v) for t, v in s.by_tag.items()}
             cities[cid] = {
-                "by_tag": {t: v for t, v in by_tag.items() if _nonzero(v)},
+                "by_tag": {t: v for t, v in by_tag.items() if not _all_zero(v)},
                 "fire_age_h": _series(s.fire_age_h),
                 "met": {k: _series(v) for k, v in s.met.items()},
             }
@@ -317,12 +350,13 @@ def _extras(b: _Build) -> dict:
 
 # --- builds ---
 
-def _build(day: date, now: datetime) -> None:
+def _build(day: date) -> None:
     def report(fraction: float, stage: str) -> None:
         _S.set_status(day, "running", fraction, stage)
 
     try:
         with _S.build_lock:
+            now = _now()  # a queued build computes its window when it actually starts
             report(0.0, "starting")
             run = run_date(day, now, lambda f, s: report(0.9 * f, s))
             report(0.9, "city series and fires")
@@ -361,8 +395,8 @@ def _user_field(b: _Build, tag: str, hour: int) -> np.ndarray:
         sub = b._user_runs.get(tag)
         if sub is None:
             sub = RunResult.from_dir(b.extras_dir / tag)
-            if sub is None:
-                raise RuntimeError(f"user source {tag} of {b.run.run_id} has no readable run")
+            if sub is None:  # cleaned up with its superseded run
+                raise FileNotFoundError(b.extras_dir / tag)
             b._user_runs[tag] = sub
     return sub.frame(hour - meta["start_hour"])[SIM_TAG]
 
@@ -381,6 +415,25 @@ def _run_seed(run) -> int:
     return int(json.loads((run.out_dir / "run.json").read_text()).get("seed", 0))
 
 
+def _reserve_user_tag(b: _Build) -> str:
+    """Claim the next free `user_N` id of a build (cap MAX_USER_SOURCES, counting sources in
+    flight). Held only briefly: the simulation runs without the build lock."""
+    with b.lock:
+        taken = set(_user_sources(b)) | b._reserved
+        if len(taken) >= MAX_USER_SOURCES:
+            raise HTTPException(422, f"at most {MAX_USER_SOURCES} added sources per run")
+        n = next(i for i in range(1, MAX_USER_SOURCES + 1) if f"user_{i}" not in taken)
+        tag = f"user_{n}"
+        b._reserved.add(tag)
+        return tag
+
+
+def _require_run_dir(run) -> None:
+    """Raise FileNotFoundError (answered as 409) if the build was cleaned up meanwhile."""
+    if not run.out_dir.is_dir():
+        raise FileNotFoundError(run.out_dir)
+
+
 def _add_source(b: _Build, req: "SourceRequest", now: datetime) -> dict:
     run = b.run
     try:  # validates every field against the run window
@@ -389,11 +442,13 @@ def _add_source(b: _Build, req: "SourceRequest", now: datetime) -> dict:
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
     spec = KINDS[req.kind]
-    with b.lock:
-        users = _user_sources(b)
-        if len(users) >= MAX_USER_SOURCES:
-            raise HTTPException(422, f"at most {MAX_USER_SOURCES} added sources per run")
-        tag = f"user_{len(users) + 1}"
+    if spec.total_kg is not None:
+        label = f"{spec.label}: {FIREWORKS_SIZE_NAMES[int(req.amount)]} event"
+    else:
+        label = f"{spec.label}: {req.amount:g} {spec.unit}"
+    tag = _reserve_user_tag(b)
+    out_dir = b.extras_dir / tag
+    try:
         s = req.start_hour
         sub_hours = run.hours - s
         # the sub-run starts at the source's first hour, without spin-up
@@ -403,24 +458,30 @@ def _add_source(b: _Build, req: "SourceRequest", now: datetime) -> dict:
         off = b.met_offset_h + s
         sub_met = MetField(MetRaw(raw.start + timedelta(hours=off), raw.hours - off, raw.lon,
                                   raw.lat, {k: v[off:] for k, v in raw.variables.items()}))
-        b.extras_dir.mkdir(parents=True, exist_ok=True)
-        out_dir = b.extras_dir / tag
+        _require_run_dir(run)
+        b.extras_dir.mkdir(exist_ok=True)
         if out_dir.exists():  # left by a request that died before registering it
             shutil.rmtree(out_dir)
         sub = simulate(em, sub_met, _S.elev(), run.start + timedelta(hours=s), sub_hours,
                        out_dir, seed=_run_seed(run), spinup_h=0, made_at=now)
         series = city_series(_OneTag(sub), sub_met, 0.0)
         by_city = {cid: [0.0] * s + _series(cs.by_tag[SIM_TAG]) for cid, cs in series.items()}
-        if spec.total_kg is not None:
-            label = f"{spec.label}: size {req.amount:g}"
-        else:
-            label = f"{spec.label}: {req.amount:g} {spec.unit}"
         meta = {"id": tag, "label": label, "color": USER_COLOR, "kind": req.kind,
                 "lon": req.lon, "lat": req.lat, "amount": req.amount, "start_hour": s,
                 "duration_h": req.duration_h, "by_city": by_city}
+        _require_run_dir(run)
         _write_json(b.extras_dir / f"{tag}.json", meta)
-        users[tag] = meta
-        b._user_runs[tag] = sub
+        with b.lock:  # publish
+            users = _user_sources(b)
+            users[tag] = meta
+            b._users = dict(sorted(users.items(), key=lambda kv: int(kv[0][5:])))
+            b._user_runs[tag] = sub
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
+    finally:
+        with b.lock:
+            b._reserved.discard(tag)
     return {"tag": {"id": tag, "label": label, "color": USER_COLOR}, "by_city": by_city,
             "build_id": run.run_id}
 
@@ -435,8 +496,8 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 async def _internal_errors(request: Request, call_next):
     try:
         return await call_next(request)
-    except Exception:  # noqa: BLE001 - logged with keys scrubbed, generic body
-        _log_exception(f"{request.method} {request.url.path} failed")
+    except Exception as exc:  # noqa: BLE001 - logged with keys scrubbed, generic body
+        _log_exception(f"{request.method} {request.url.path} failed", exc)
         return CleanJSONResponse({"detail": "internal server error"}, status_code=500)
 
 
@@ -452,10 +513,28 @@ async def _invalid(request: Request, exc: RequestValidationError):
     return CleanJSONResponse({"detail": "; ".join(parts)}, status_code=422)
 
 
+def _gone(build_id: str | None) -> CleanJSONResponse:
+    detail = "run was rebuilt" if build_id is not None else "run expired"
+    return CleanJSONResponse({"detail": detail, "build_id": build_id}, status_code=409)
+
+
 @app.exception_handler(_Rebuilt)
 async def _rebuilt(request: Request, exc: _Rebuilt):
-    return CleanJSONResponse({"detail": "run was rebuilt", "build_id": exc.build_id},
-                             status_code=409)
+    return _gone(exc.build_id)
+
+
+@app.exception_handler(FileNotFoundError)
+async def _vanished(request: Request, exc: FileNotFoundError):
+    """A build's files disappeared under a request (the run was superseded and cleaned up)."""
+    run_id = request.path_params.get("run_id")
+    if run_id is None:
+        _log_exception(f"{request.method} {request.url.path} failed", exc)
+        return CleanJSONResponse({"detail": "internal server error"}, status_code=500)
+    try:
+        run = await run_in_threadpool(load_run, date.fromisoformat(run_id), _now())
+    except (ValueError, OSError):
+        run = None
+    return _gone(None if run is None else run.run_id)
 
 
 @app.exception_handler(UpstreamError)
@@ -479,24 +558,29 @@ class SourceRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return _json({"ok": True})
 
 
-@app.post("/api/runs", status_code=202)
+@app.post("/api/runs")
 def post_run(body: RunRequest):
     now = _now()
     day = _parse_day(body.date, now)
     run_id = day.isoformat()
     with _S.lock:
         st = _S.status.get(day)
-        if st is not None and st.status == "running":
-            return {"run_id": run_id}
-        if load_run(day, now) is not None:
+    if st is not None and st.status == "running":
+        return _json({"run_id": run_id}, 202)
+    stored = load_run(day, now)  # disk I/O: outside the status lock
+    with _S.lock:
+        st = _S.status.get(day)
+        if st is not None and st.status == "running":  # another POST started it meanwhile
+            return _json({"run_id": run_id}, 202)
+        if stored is not None:
             _S.status[day] = _Status("ready", 1.0, "ready")
-            return CleanJSONResponse({"run_id": run_id, "status": "ready"}, status_code=200)
+            return _json({"run_id": run_id, "status": "ready"})
         _S.status[day] = _Status("running", 0.0, "queued")
-    threading.Thread(target=_build, args=(day, now), name=f"build-{day}", daemon=True).start()
-    return {"run_id": run_id}
+    threading.Thread(target=_build, args=(day,), name=f"build-{day}", daemon=True).start()
+    return _json({"run_id": run_id}, 202)
 
 
 @app.get("/api/runs/{run_id}")
@@ -506,9 +590,9 @@ def get_run(run_id: str):
     with _S.lock:
         st = _S.status.get(day)
     if st is not None and st.status != "ready":
-        return asdict(st)
+        return _json(asdict(st))
     if load_run(day, now) is not None:
-        return asdict(_Status("ready", 1.0, "ready"))
+        return _json(asdict(_Status("ready", 1.0, "ready")))
     raise HTTPException(404, f"no run for {day}; POST /api/runs to build it")
 
 
@@ -529,13 +613,13 @@ def get_meta(run_id: str):
         e = ex["cities"][c.id]
         by_tag = dict(e["by_tag"])
         for u, m in users.items():
-            if _nonzero(m["by_city"][c.id]):
+            if not _all_zero(m["by_city"][c.id]):
                 by_tag[u] = m["by_city"][c.id]
         cities.append({"id": c.id, "name": c.name, "lat": c.lat, "lon": c.lon,
                        "region": city_region(c), "by_tag": by_tag,
                        "fire_age_h": e["fire_age_h"], "met": e["met"]})
     inv = inventory_notes()
-    return {
+    return _json({
         "date": run_id, "build_id": run.run_id,
         "made_at": None if run.made_at is None else run.made_at.isoformat(),
         "hours": [(run.start + timedelta(hours=h)).isoformat() for h in range(run.hours)],
@@ -550,7 +634,7 @@ def get_meta(run_id: str):
             "city_area_km": CITY_AREA_KM, "share_uncertainty_pp": SHARE_UNCERTAINTY_PP,
             "min_date": MIN_DATE.isoformat(),
         },
-    }
+    })
 
 
 @app.get("/api/runs/{run_id}/frames/{hour}")
@@ -571,7 +655,7 @@ def get_frame(run_id: str, hour: int, build: str | None = None, extra: str | Non
 
 @app.get("/api/runs/{run_id}/fires")
 def get_fires(run_id: str, build: str | None = None):
-    return _extras(_resolve(run_id, build))["fires"]
+    return _json(_extras(_resolve(run_id, build))["fires"])
 
 
 @app.get("/api/runs/{run_id}/wind/{hour}")
@@ -580,10 +664,8 @@ def get_wind(run_id: str, hour: int, build: str | None = None):
     _check_hour(b.run, hour)
     g = b.met().grid(b.met_offset_h + hour)
     lon, lat = lattice()
-    return {"step": MET_STEP_DEG, "lon0": float(lon[0]), "lat0": float(lat[0]),
-            "nx": NLON, "ny": NLAT,
-            "u": [round(x, 2) if math.isfinite(x) else None for x in g["u"].ravel().tolist()],
-            "v": [round(x, 2) if math.isfinite(x) else None for x in g["v"].ravel().tolist()]}
+    return _json({"step": MET_STEP_DEG, "lon0": lon[0], "lat0": lat[0], "nx": NLON, "ny": NLAT,
+                  "u": np.round(g["u"].ravel(), 2), "v": np.round(g["v"].ravel(), 2)})
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/path/{hour}")
@@ -593,7 +675,7 @@ def get_path(run_id: str, city_id: str, hour: int, build: str | None = None):
     _check_hour(b.run, hour)
     points = back_trajectory(b.met(), _S.elev(), city.lon, city.lat, hour,
                              met_offset_h=b.met_offset_h)
-    return [[round(lon, 3), round(lat, 3)] for lon, lat in points]
+    return _json([[round(lon, 3), round(lat, 3)] for lon, lat in points])
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/cams")
@@ -604,7 +686,7 @@ def get_cams(run_id: str, city_id: str, build: str | None = None):
         values = fetch_cams_pm25(city.lat, city.lon, run.start, run.hours)
     except UpstreamError as exc:
         raise _upstream(exc) from None
-    return {"values": _series(values)}
+    return _json({"values": _series(values)})
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/measured")
@@ -622,14 +704,14 @@ def get_measured(run_id: str, city_id: str, build: str | None = None):
             live = live_pm25(city)
         except UpstreamError as exc:
             live_error = _scrub(f"{exc.service}: {exc.message}")
-    return {"values": _series(m.values), "station_count": m.station_count, "live": live,
-            "live_error": live_error, "source": "CPCB via OpenAQ",
-            "aligned": "hour mean, overlap-weighted"}
+    return _json({"values": _series(m.values), "station_count": m.station_count, "live": live,
+                  "live_error": live_error, "source": "CPCB via OpenAQ",
+                  "aligned": "hour mean, overlap-weighted"})
 
 
 @app.post("/api/runs/{run_id}/sources")
 def post_source(run_id: str, body: SourceRequest, build: str | None = None):
-    return _add_source(_resolve(run_id, build), body, _now())
+    return _json(_add_source(_resolve(run_id, build), body, _now()))
 
 
 @app.get("/api/validation")
@@ -637,4 +719,4 @@ def get_validation():
     path = config.data_dir() / "validation.json"
     if not path.is_file():
         raise HTTPException(404, "no validation results yet")
-    return json.loads(path.read_text())
+    return _json(json.loads(path.read_text()))

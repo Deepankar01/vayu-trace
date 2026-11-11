@@ -24,6 +24,7 @@ import json
 import math
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -54,6 +55,7 @@ EMPTY_DISCOVERY_TTL_S = 3600  # an empty locations reply may be a glitch: do not
 EMPTY_HOURS_TTL_S = 24 * 3600  # OpenAQ holes can be backfilled: an empty window is never final
 MERGE_M = 300.0  # locations this close are one physical site
 HOUR = timedelta(hours=1)
+SPAN_WORKERS = 8  # parallel /sensors/{id} lookups (well inside the 60 requests/minute limit)
 
 
 @dataclass(frozen=True)
@@ -233,6 +235,34 @@ def stations_near(city: City, sleep: Callable[[float], None] = time.sleep) -> li
     return out
 
 
+def sensor_span(sensor_id: int, sleep: Callable[[float], None] = time.sleep
+                ) -> tuple[datetime | None, datetime | None]:
+    """(first, last) measurement time of one sensor, from `/sensors/{id}`. Cached 7 days (1 hour
+    if the reply was empty, which gives (None, None): unknown, so the sensor is still tried).
+
+    A location's own first/last cannot rule a window out: a station merged from co-located
+    locations, or a location with a legacy and a newer pm25 sensor, spans the 2022-2025
+    coverage gap even though no single sensor has data in it.
+    """
+    results = _cached_unless_empty(
+        f"sensor:{sensor_id}", _validated(f"/sensors/{sensor_id}", {}, "sensor", sleep),
+        DISCOVERY_TTL_S, EMPTY_DISCOVERY_TTL_S, "sensor")
+    if not results:
+        return None, None
+    r = results[0]
+    return (_parse_ts((r.get("datetimeFirst") or {}).get("utc")),
+            _parse_ts((r.get("datetimeLast") or {}).get("utc")))
+
+
+def _may_overlap(first: datetime | None, last: datetime | None,
+                 start: datetime, end: datetime) -> bool:
+    """False only when data from [first, last] provably cannot reach [start, end). `last` comes
+    from a cache up to 7 days old, so it is only trusted past that staleness."""
+    if last is not None and last + timedelta(seconds=DISCOVERY_TTL_S) < start:
+        return False
+    return not (first is not None and first >= end)
+
+
 def _hours_raw(sensor_id: int, t0: datetime, t1: datetime, now: datetime, sleep) -> list[dict]:
     """Hourly rows for one sensor over [t0, t1).
 
@@ -306,6 +336,9 @@ def city_pm25(
     count towards `station_count` (a location that reported nothing then is skipped, up to 15
     tried). A station's sensors are merged, the first valid value per hour winning, and the
     median is taken per hour over the stations that have a value.
+
+    Hourly data is requested only for sensors whose own availability (`sensor_span`) can overlap
+    the window; when none can, no hourly request is made at all.
     """
     start = _utc(start)
     if start.minute or start.second or start.microsecond:
@@ -314,18 +347,20 @@ def city_pm25(
         raise ValueError("hours must be positive")
     now = _utc(now) if now is not None else _now()
     end = start + hours * HOUR
+    candidates = [st for st in stations_near(city, sleep)
+                  if _may_overlap(st.first, st.last, start, end)][:MAX_CANDIDATES]
+    sids = list(dict.fromkeys(s for st in candidates for s in st.sensor_ids))
+    with ThreadPoolExecutor(SPAN_WORKERS) as pool:
+        spans = dict(zip(sids, pool.map(lambda sid: sensor_span(sid, sleep), sids)))
     used: list[np.ndarray] = []
-    tried = 0
-    for st in stations_near(city, sleep):
-        if len(used) == MAX_STATIONS or tried == MAX_CANDIDATES:
+    for st in candidates:
+        if len(used) == MAX_STATIONS:
             break
-        # `last` comes from a cache up to 7 days old: only trust it past that staleness
-        if (st.last and st.last + timedelta(seconds=DISCOVERY_TTL_S) < start) or (
-                st.first and st.first >= end):
+        live = [sid for sid in st.sensor_ids if _may_overlap(*spans[sid], start, end)]
+        if not live:
             continue
-        tried += 1
         series = np.full(hours, np.nan, dtype=np.float32)
-        for sid in st.sensor_ids:
+        for sid in live:
             s = _sensor_series(sid, start, hours, now, sleep)
             series = np.where(np.isnan(series), s, series)
         if np.isfinite(series).any():

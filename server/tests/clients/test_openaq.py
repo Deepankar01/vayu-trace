@@ -46,8 +46,21 @@ def ok(results):
 
 @pytest.fixture
 def mock():
+    """respx router; `/sensors/{id}` availability is wide unless a test sets `mock.spans[id]`."""
     with respx.mock(assert_all_called=False) as m:
+        m.spans = {}
+
+        def availability(request, sid):
+            return m.spans.get(int(sid), span(int(sid)))
+
+        m.get(url__regex=SENSORS.replace(".", r"\.") + r"(?P<sid>\d+)$").mock(
+            side_effect=availability)
         yield m
+
+
+def span(sid, first="2018-01-01T00:00:00Z", last="2026-11-11T00:00:00Z"):
+    return ok([{"id": sid, "datetimeFirst": first and {"utc": first},
+                "datetimeLast": last and {"utc": last}}])
 
 
 def serve(mock, locations, hours_by_sensor):
@@ -94,7 +107,7 @@ def test_only_cpcb_provider_used(mock):
     out = run()
     assert out.station_count == 1 and out.values[0] == 40.0
     called = {str(c.request.url.path) for c in mock.calls}
-    assert called == {"/v3/locations", "/v3/sensors/30/hours"}
+    assert called == {"/v3/locations", "/v3/sensors/30", "/v3/sensors/30/hours"}
 
 
 def test_nearest_five_stations_only_whatever_the_api_order(mock):
@@ -374,3 +387,48 @@ def test_empty_settled_hours_are_not_final(mock, monkeypatch):
     advance(monkeypatch, 1000 * 24 * 3600)
     run(now=OLD_NOW)
     assert route.call_count == 2  # non-empty settled data is final
+
+
+def test_sensor_outside_the_window_is_not_queried(mock):
+    # one station spanning the coverage gap: a legacy sensor that ended before the window and
+    # a newer one that starts after it, so the station's own first/last cannot rule it out
+    mock.spans[10] = span(10, last="2022-10-31T00:00:00Z")
+    mock.spans[11] = span(11, first="2027-01-01T00:00:00Z")
+    mock.spans[20] = span(20, last="2022-10-31T00:00:00Z")
+    serve(mock, [loc(1, 0.01, sensors=[10, 11]), loc(2, 0.05, sensors=[20])], {})
+    out = run()
+    assert out.station_count == 0 and np.isnan(out.values).all()
+    assert not any(str(c.request.url.path).endswith("/hours") for c in mock.calls)
+
+
+def test_only_overlapping_sensors_of_a_station_are_queried(mock):
+    mock.spans[10] = span(10, last="2022-10-31T00:00:00Z")
+    serve(mock, [loc(1, 0.01, sensors=[10, 11])], {11: [row(0, 4.0)]})
+    out = run()
+    assert out.station_count == 1 and out.values[0] == 4.0
+    hours = {c.request.url.path for c in mock.calls if c.request.url.path.endswith("/hours")}
+    assert hours == {"/v3/sensors/11/hours"}
+
+
+def test_unknown_sensor_span_is_tried_and_spans_are_cached(mock, monkeypatch):
+    mock.spans[10] = ok([])  # no metadata: unknown, so still tried
+    serve(mock, [loc(1, 0.01)], {10: [row(0, 2.0)]})
+
+    def lookups():
+        return sum(c.request.url.path == "/v3/sensors/10" for c in mock.calls)
+
+    assert run().station_count == 1 and lookups() == 1
+    run()
+    assert lookups() == 1  # an empty reply is remembered for an hour
+    mock.spans[10] = span(10)
+    advance(monkeypatch, 3700)
+    run()
+    run()
+    assert lookups() == 2  # then fetched again, and a real span is kept for days
+
+
+def test_stale_sensor_last_does_not_drop_a_live_sensor(mock):
+    six_days = (START - timedelta(days=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    mock.spans[10] = span(10, last=six_days)
+    serve(mock, [loc(1, 0.01)], {10: [row(0, 5.0)]})
+    assert run().station_count == 1

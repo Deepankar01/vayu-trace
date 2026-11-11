@@ -42,12 +42,15 @@ class FakeRun:
         self.step_stats = {"left_domain": 1, "depleted": 2, "missing_met": 0}
         self.made_at, self.format_version = MADE, 3
         self.constants = {"SPINUP_H": SPINUP}
+        self.nan_over_delhi = None  # (tag, hour): that tag is NaN over Delhi's 3x3 block
 
     @property
     def run_id(self):
         return self.out_dir.name
 
     def frame(self, h):
+        if not self.out_dir.is_dir():  # like RunResult: its files went with the directory
+            raise FileNotFoundError(self.out_dir / f"frame_{h:03d}.npz")
         zero = np.zeros((NY, NX), np.float32)
         zero[0, 0] = np.nan  # mixing height missing here: every tag NaN
         out = {t: zero.copy() for t in self.tags}
@@ -55,6 +58,8 @@ class FakeRun:
         fire = zero.copy()
         fire[DELHI_IY - 1:DELHI_IY + 2, DELHI_IX - 1:DELHI_IX + 2] = 2.5
         out["fire_punjab"] = fire
+        if self.nan_over_delhi and self.nan_over_delhi[1] == h:
+            out[self.nan_over_delhi[0]][DELHI_IY - 1:DELHI_IY + 2, DELHI_IX - 1:DELHI_IX + 2] = np.nan
         return out
 
     def haze(self, h):
@@ -87,8 +92,9 @@ def env(tmp_path, monkeypatch):
     state = {"run": None, "built": 0, "met_calls": [], "live_calls": 0}
     fake = FakeRun(tmp_path)
 
-    def load_run(day, now):
-        return state["run"] if day == DAY else None
+    def load_run(day, now):  # like the real one: a run whose directory is gone is not served
+        run = state["run"] if day == DAY else None
+        return run if run is not None and run.out_dir.is_dir() else None
 
     def run_date(day, now, progress):
         progress(0.0, "fetching fires")
@@ -130,6 +136,7 @@ def env(tmp_path, monkeypatch):
         np.full(hours - 1, 42.0), np.nan])
     state["fake"] = fake
     state["plain_run_date"] = run_date
+    state["plain_fetch_met"] = fetch_met
     state["client"] = TestClient(api.app)
     return state
 
@@ -218,6 +225,88 @@ def test_builds_are_serialised(env, monkeypatch):
     for d in (date(2023, 11, 5), date(2023, 11, 6), date(2023, 11, 7)):
         wait_status(c, d)
     assert peak[0] == 1
+
+
+def test_queued_build_reads_the_clock_when_it_starts(env, monkeypatch):
+    gate, started = threading.Event(), threading.Event()
+    seen = {}
+    plain = api.run_date
+
+    def recording(day, now, progress):
+        seen[day] = now
+        if day == DAY:
+            started.set()
+            gate.wait(10)
+        return plain(day, now, progress)
+
+    monkeypatch.setattr(api, "run_date", recording)
+    c = env["client"]
+    c.post("/api/runs", json={"date": "2023-11-05"})
+    assert started.wait(5)
+    c.post("/api/runs", json={"date": "2023-11-06"})  # queued behind the first build
+    later = NOW + timedelta(minutes=40)
+    monkeypatch.setattr(api, "_now", lambda: later)
+    gate.set()
+    wait_status(c, date(2023, 11, 6))
+    assert seen[DAY] == NOW and seen[date(2023, 11, 6)] == later
+
+
+def test_status_polling_never_waits_on_disk(env, monkeypatch):
+    gate, entered = threading.Event(), threading.Event()
+    plain_load = api.load_run
+
+    def slow_load(day, now):
+        if day == date(2023, 11, 6):
+            entered.set()
+            gate.wait(10)
+        return plain_load(day, now)
+
+    monkeypatch.setattr(api, "load_run", slow_load)
+    c = env["client"]
+    c.post("/api/runs", json={"date": "2023-11-05"})
+    wait_status(c)
+    poster = threading.Thread(target=lambda: c.post("/api/runs", json={"date": "2023-11-06"}))
+    poster.start()
+    try:
+        assert entered.wait(5)  # the POST is inside load_run now
+        t = time.monotonic()
+        assert c.get("/api/runs/2023-11-05").json()["status"] == "ready"
+        assert time.monotonic() - t < 2
+    finally:
+        gate.set()
+        poster.join(10)
+
+
+def test_source_simulation_does_not_hold_the_build_lock(env, monkeypatch):
+    c = ready(env)
+    c.get("/api/runs/2023-11-05/meta")
+    gate, entered = threading.Event(), threading.Event()
+    real = api.simulate
+
+    def slow(*a, **kw):
+        if not entered.is_set():  # only the first source waits
+            entered.set()
+            gate.wait(10)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(api, "simulate", slow)
+    result = {}
+    poster = threading.Thread(target=lambda: result.update(
+        r=c.post("/api/runs/2023-11-05/sources", json=SOURCE)))
+    poster.start()
+    try:
+        assert entered.wait(5)
+        t = time.monotonic()
+        assert c.get("/api/runs/2023-11-05/meta").status_code == 200
+        second = c.post("/api/runs/2023-11-05/sources", json={**SOURCE, "amount": 5.0})
+        assert time.monotonic() - t < 5
+        assert second.json()["tag"]["id"] == "user_2"  # user_1 is reserved by the first
+    finally:
+        gate.set()
+        poster.join(20)
+    assert result["r"].json()["tag"]["id"] == "user_1"
+    tags = [t["id"] for t in c.get("/api/runs/2023-11-05/meta").json()["tags"]]
+    assert tags[-2:] == ["user_1", "user_2"]
 
 
 @pytest.mark.parametrize("value", ["2026-11-12", "2030-01-01"])
@@ -314,10 +403,47 @@ def test_meta_never_contains_nan(env):
     json.loads(r.text, parse_constant=lambda c: pytest.fail(f"non-JSON constant {c}"))
 
 
-def test_clean_json_response_maps_nan_to_null():
+def test_clean_json_response_class_maps_nan_to_null():
+    """Unit test of the response class; the route tests below go through real routes."""
     body = api.CleanJSONResponse({"a": [float("nan"), np.float32(1.5), float("inf")],
                                   "b": np.array([np.nan, 2.0]), "c": np.int64(3)}).body
     assert json.loads(body) == {"a": [None, 1.5, None], "b": [None, 2.0], "c": 3}
+
+
+def test_numpy_values_through_real_routes(env, monkeypatch):
+    c = ready(env)
+    monkeypatch.setattr(api, "city_pm25", lambda city, start, hours, now=None: MeasuredSeries(
+        np.array([1.5, np.nan, np.inf], np.float32), np.int64(2)))
+    monkeypatch.setattr(api, "live_pm25", lambda city: np.float32(55.5))
+    env["fake"].start = NOW - timedelta(hours=1)  # so `live` is requested
+    r = c.get("/api/runs/2023-11-05/cities/delhi/measured")
+    assert r.status_code == 200
+    body = json.loads(r.text, parse_constant=lambda x: pytest.fail(f"non-JSON constant {x}"))
+    assert body["values"] == [1.5, None, None] and body["station_count"] == 2
+    assert body["live"] == 55.5
+
+    @api.app.get("/api/_probe")
+    def probe():
+        return api._json({"i": np.int64(3), "f": np.float32(1.5),
+                          "nested": {"a": np.array([1.0, np.nan, np.inf, -np.inf]),
+                                     "list": [np.float64("nan"), (np.int32(4),)]}})
+
+    try:
+        r = c.get("/api/_probe")
+    finally:
+        api.app.router.routes[:] = [x for x in api.app.router.routes
+                                    if getattr(x, "path", None) != "/api/_probe"]
+    assert r.status_code == 200
+    assert json.loads(r.text, parse_constant=lambda x: pytest.fail(x)) == {
+        "i": 3, "f": 1.5, "nested": {"a": [1.0, None, None, None], "list": [None, [4]]}}
+
+
+def test_meta_keeps_series_with_missing_values(env):
+    env["fake"].nan_over_delhi = ("industry_bihar", 1)  # zero except one missing hour
+    m = ready(env).get("/api/runs/2023-11-05/meta").json()
+    delhi = next(x for x in m["cities"] if x["id"] == "delhi")
+    assert delhi["by_tag"]["industry_bihar"] == [0.0, None, 0.0]  # missing never reads as zero
+    assert "industry_haryana" not in delhi["by_tag"]  # exact zeros everywhere: dropped
 
 
 def test_meta_built_on_demand_for_stored_run(env):
@@ -373,6 +499,51 @@ def test_build_mismatch_409(env):
         assert r.json() == {"detail": "run was rebuilt", "build_id": env["fake"].run_id}
     r = c.post("/api/runs/2023-11-05/sources?build=20200101T000000Z-bbbbbbbb", json=SOURCE)
     assert r.status_code == 409
+
+
+def test_expired_run_with_build_is_409_without_is_404(env):
+    c = ready(env)
+    build = env["fake"].run_id
+    env["run"] = None  # e.g. today's run passed its one-hour freshness
+    for path in ("frames/0", "fires", "wind/0", "cities/delhi/path/0", "cities/delhi/cams"):
+        r = c.get(f"/api/runs/2023-11-05/{path}?build={build}")
+        assert r.status_code == 409, path
+        assert r.json() == {"detail": "run expired", "build_id": None}
+        assert c.get(f"/api/runs/2023-11-05/{path}").status_code == 404
+
+
+def test_run_directory_removed_under_a_cached_build_is_409(env):
+    c = ready(env)
+    assert c.get("/api/runs/2023-11-05/frames/0").status_code == 200  # build now cached
+    held = api._S.build_for(env["fake"])
+    shutil.rmtree(env["fake"].out_dir)  # superseded and cleaned up
+    r = api_frame_with_held_build(c, held)
+    assert r.status_code == 409 and r.json() == {"detail": "run expired", "build_id": None}
+
+
+def api_frame_with_held_build(client, held):
+    """Request a frame while _resolve still hands out the (now deleted) cached build, as
+    happens when cleanup runs between resolving and reading."""
+    real = api._resolve
+    api._resolve = lambda run_id, build: held
+    try:
+        return client.get("/api/runs/2023-11-05/frames/0")
+    finally:
+        api._resolve = real
+
+
+def test_source_post_whose_build_disappears_is_409(env, monkeypatch):
+    c = ready(env)
+    real = api.simulate
+
+    def vanish(*a, **kw):
+        out = real(*a, **kw)
+        shutil.rmtree(env["fake"].out_dir)
+        return out
+
+    monkeypatch.setattr(api, "simulate", vanish)
+    r = c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    assert r.status_code == 409 and r.json()["detail"] == "run expired"
 
 
 # --- fires, wind, path, cams, measured ---
@@ -474,11 +645,28 @@ def test_extra_tags_included(env):
     assert c.get("/api/runs/2023-11-05/frames/1?extra=user_9").status_code == 404
 
 
-def test_user_frames_match_by_city_scale(env):
+def test_source_by_city_scales_with_amount(env):
     c = ready(env)
     small = c.post("/api/runs/2023-11-05/sources", json=SOURCE).json()["by_city"]["delhi"]
     big = c.post("/api/runs/2023-11-05/sources", json={**SOURCE, "amount": 20.0}).json()
     np.testing.assert_allclose(big["by_city"]["delhi"], np.array(small) * 2, rtol=1e-4)
+
+
+def test_user_frames_match_by_city(env):
+    c = ready(env)
+    body = c.post("/api/runs/2023-11-05/sources", json=SOURCE).json()
+    tag = body["tag"]["id"]
+    for city_id in ("delhi", "noida", "gurugram"):
+        city = BY_ID[city_id]
+        ix, iy = (int(v) for v in cell_index(city.lon, city.lat))
+        for h in range(HOURS):
+            frame = decode_frame(c.get(f"/api/runs/2023-11-05/frames/{h}?extra={tag}").content)
+            grid = frame.get(tag, np.zeros((NY, NX), np.float32))
+            block = grid[iy - 1:iy + 2, ix - 1:ix + 2].astype(float)
+            want = body["by_city"][city_id][h]
+            tol = float(grid.max()) / 65534 + abs(want) * 1e-4  # quantisation + 5 digits
+            assert np.nanmean(block) == pytest.approx(want, abs=tol), (city_id, h)
+    assert max(body["by_city"]["delhi"]) > 0
 
 
 @pytest.mark.parametrize("change", [
@@ -489,6 +677,12 @@ def test_user_frames_match_by_city_scale(env):
 def test_dropped_outside_domain_422(env, change):
     r = ready(env).post("/api/runs/2023-11-05/sources", json={**SOURCE, **change})
     assert r.status_code == 422 and r.json()["detail"]
+
+
+def test_fireworks_label_names_the_event_size(env):
+    r = ready(env).post("/api/runs/2023-11-05/sources",
+                        json={**SOURCE, "kind": "fireworks", "amount": 2})
+    assert r.json()["tag"]["label"].endswith(": medium event")
 
 
 def test_source_cap(env):
@@ -556,10 +750,23 @@ def test_no_key_in_any_response(env, monkeypatch, caplog):
         api._S.builds.clear()
         c.post("/api/runs", json={"date": "2023-11-05"})
         bodies.append(json.dumps(wait_status(c)).encode())  # fails in fetch_met (extras)
-    assert json.loads(bodies[11])["detail"] == "openaq: HTTP 401 for key *** *** ***"
-    assert json.loads(bodies[13])["live_error"].startswith("data.gov.in: HTTP 502 api-key=***")
-    assert json.loads(bodies[14])["error"].startswith("internal error")
-    assert json.loads(bodies[15])["error"] == "openaq: HTTP 401 for key *** *** ***"
+
+        def crash(*a, **kw):
+            raise RuntimeError(f"endpoint crash with {leak}")
+
+        monkeypatch.setattr(api, "back_trajectory", crash)
+        monkeypatch.setattr(api, "fetch_met", env["plain_fetch_met"])
+        env["run"] = env["fake"]
+        generic = c.get("/api/runs/2023-11-05/cities/delhi/path/0")
+        bodies.append(generic.content)
+    assert generic.status_code == 500 and generic.json() == {"detail": "internal server error"}
+    texts = [b.decode("utf-8", errors="replace") for b in bodies]
+    scrubbed = "openaq: HTTP 401 for key *** *** ***"
+    assert any(f'"detail":"{scrubbed}"' in t for t in texts)  # measured and cams 502
+    assert any('"live_error":"data.gov.in: HTTP 502 api-key=*** *** ***"' in t for t in texts)
+    assert any('"error": "internal error' in t for t in texts)  # generic build failure
+    assert any(f'"error": "{scrubbed}"' in t for t in texts)  # upstream build failure
+    assert "endpoint crash with *** *** ***" in caplog.text  # logged, scrubbed
     for body in bodies:
         for value in KEYS.values():
             assert value.encode() not in body

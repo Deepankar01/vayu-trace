@@ -8,6 +8,13 @@ error is at most max / (2 x 65534).
 
 A tag that is zero everywhere is omitted (the browser treats absent tags as zero), except the
 pseudo-tag `__haze` (the hygroscopic growth factor), which is always present and always last.
+
+Readers: the float32 `scale` and the uint16 code arrays are NOT aligned (their offsets depend on
+the preceding id lengths), so a JavaScript reader must read `scale` with a `DataView` and either
+read codes through a `DataView` or copy them (`buf.slice(offset, offset + 2 * nx * ny)`) before
+creating a `Uint16Array` view; `new Uint16Array(buf, oddOffset)` throws. Typed arrays use the
+platform byte order, which is little-endian on every browser platform in use. `scale` is a
+float32, so a tag whose maximum is below about 1e-40 (max / 65534 underflows) decodes as zero.
 """
 import struct
 
