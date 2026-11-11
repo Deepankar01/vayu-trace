@@ -877,3 +877,38 @@ def test_delete_source_build_mismatch_409(env):
     env["run"] = None
     r = c.delete(f"/api/runs/2023-11-05/sources/user_1?build={env['fake'].run_id}")
     assert r.status_code == 409 and r.json()["build_id"] is None
+
+
+def test_source_deleted_during_a_frame_fetch_is_404_not_500(env, monkeypatch, caplog):
+    c = ready(env)
+    c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    api._S.builds.clear()  # the sub-run is not cached in memory: the frame read hits the disk
+    real = api._user_sources
+    state = {"armed": True}
+
+    def lookup_then_delete(b):
+        users = real(b)
+        if state["armed"] and "user_1" in users:
+            state["armed"] = False
+            snapshot = dict(users)
+            api._remove_source(b, "user_1")  # the DELETE lands between lookup and field load
+            return snapshot
+        return users
+
+    monkeypatch.setattr(api, "_user_sources", lookup_then_delete)
+    with caplog.at_level(logging.ERROR):
+        r = c.get("/api/runs/2023-11-05/frames/1?extra=user_1")
+    assert r.status_code == 404, r.text
+    assert "removed" in r.json()["detail"]
+    assert not any("file missing in current build" in m for m in caplog.messages)
+
+
+def test_missing_subrun_of_a_live_source_is_still_500(env, caplog):
+    c = ready(env)
+    c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    api._S.builds.clear()
+    extras = env["fake"].out_dir.parent / f"{env['fake'].run_id}.extras"
+    shutil.rmtree(extras / "user_1")
+    with caplog.at_level(logging.ERROR):
+        r = c.get("/api/runs/2023-11-05/frames/1?extra=user_1")
+    assert r.status_code == 500

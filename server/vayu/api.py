@@ -417,14 +417,21 @@ def _user_field(b: _Build, tag: str, hour: int) -> np.ndarray:
         raise HTTPException(404, f"unknown user source {tag!r} for build {b.run.run_id}")
     if hour < meta["start_hour"]:
         return np.zeros((NY, NX), np.float32)
-    with b.lock:
-        sub = b._user_runs.get(tag)
-        if sub is None:
-            sub = RunResult.from_dir(b.extras_dir / tag)
-            if sub is None:  # cleaned up with its superseded run
-                raise _missing(b.extras_dir / tag)
-            b._user_runs[tag] = sub
-    return sub.frame(hour - meta["start_hour"])[SIM_TAG]
+    try:
+        with b.lock:
+            sub = b._user_runs.get(tag)
+            if sub is None:
+                sub = RunResult.from_dir(b.extras_dir / tag)
+                if sub is None:  # cleaned up with its superseded run, or removed meanwhile
+                    raise _missing(b.extras_dir / tag)
+                b._user_runs[tag] = sub
+        return sub.frame(hour - meta["start_hour"])[SIM_TAG]
+    except FileNotFoundError:
+        with b.lock:  # removed by a DELETE after the lookup above: that is a 404, not a bug
+            if tag not in _user_sources(b) or (b.extras_dir / f"{tag}.removed").exists():
+                raise HTTPException(
+                    404, f"user source {tag!r} was removed from build {b.run.run_id}") from None
+        raise
 
 
 class _OneTag:
@@ -781,6 +788,8 @@ def post_source(run_id: str, body: SourceRequest, build: str | None = None):
 
 @app.delete("/api/runs/{run_id}/sources/{tag}")
 def delete_source(run_id: str, tag: str, build: str | None = None):
+    """Remove an added source. A source still being simulated (its id reserved, not yet
+    published) is unknown here: 404, and it appears when its simulation finishes."""
     b = _resolve(run_id, build)
     with _build_files(b):
         _remove_source(b, tag)
