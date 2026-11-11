@@ -145,3 +145,83 @@ def test_markdown_states_no_fitting_and_the_numbers():
     md = validate.render_markdown(report)
     assert "No parameter was fitted to these measurements." in md
     assert "| Delhi |" in md and "-0.50" in md
+
+
+def test_cams_is_compared_over_the_model_hours():
+    hours = 72
+    obs = wave(hours)
+    sim = obs * 0.5
+    sim[:10] = np.nan  # model missing: CAMS must not use these hours either
+    cams = obs * 1.2
+    cams[30:40] = np.nan  # CAMS gap
+    report = validate.build_report({"delhi": {"sim": sim, "obs": obs, "cams": cams,
+                                              "stations": 1}}, START, hours,
+                                   pools={"all": ["delhi"]})
+    row = report["cities"][0]
+    assert row["model"]["n"] == 62
+    assert row["cams"]["n"] == 52  # hours where sim, obs and CAMS all exist
+    assert row["cams_own"]["n"] == 62  # CAMS's own hours: 72 - 10
+    assert row["cams"]["nmb"] == pytest.approx(0.2)
+    assert row["mean_measured_cams"] == pytest.approx(np.mean(np.r_[obs[10:30], obs[40:]]))
+    assert report["pooled"][0]["cams"]["n"] == 52
+
+
+def test_pooled_rows_carry_per_city_r_statistics():
+    hours = 48
+    rng = np.random.default_rng(0)
+    data = {}
+    for cid in ("delhi", "noida", "patna"):
+        obs = wave(hours) + rng.normal(0, 10, hours)
+        data[cid] = {"sim": obs + rng.normal(0, 20, hours), "obs": obs,
+                     "cams": obs + rng.normal(0, 5, hours), "stations": 1}
+    report = validate.build_report(data, START, hours, pools={"all": list(data)})
+    rs = report["pooled"][0]["r_per_city"]
+    per_city = [r["model"]["r"] for r in report["cities"]]
+    assert rs["cities"] == 3
+    assert rs["model"]["median"] == pytest.approx(np.median(per_city))
+    assert rs["model"]["mean"] == pytest.approx(np.mean(per_city))
+    assert rs["model"]["min"] == pytest.approx(min(per_city))
+    assert rs["model_r_gt_cams_r"] == sum(r["model"]["r"] > r["cams"]["r"]
+                                          for r in report["cities"])
+    md = validate.render_markdown({**report, **validate.provenance([])})
+    assert "includes differences between cities" in md and "median r" in md
+
+
+def test_measured_gaps_identical_or_not():
+    hours = 48
+    obs_a, obs_b = wave(hours), wave(hours)
+    obs_a[[3, 4]] = np.nan
+    obs_b[[3, 4]] = np.nan
+    same = validate.measured_gaps({"a": {"obs": obs_a}, "b": {"obs": obs_b}}, START)
+    assert same["identical"] and same["common"] == ["2025-11-03T03:00:00+00:00",
+                                                     "2025-11-03T04:00:00+00:00"]
+    obs_b[10] = np.nan
+    diff = validate.measured_gaps({"a": {"obs": obs_a}, "b": {"obs": obs_b}}, START)
+    assert not diff["identical"] and len(diff["common"]) == 2 and diff["extra"] == {"b": 1}
+
+
+class FakeRun:
+    run_id = "r1"
+    start = datetime(2025, 11, 3, tzinfo=UTC)
+    hours = 144
+
+    def __init__(self, forecast_from=None, fires_assumed_from=None):
+        self.forecast_from, self.fires_assumed_from = forecast_from, fires_assumed_from
+
+
+def test_run_offset_checks_the_window():
+    run = FakeRun()
+    assert validate.run_offset(run, datetime(2025, 11, 3, tzinfo=UTC), 144) == 0
+    assert validate.run_offset(run, datetime(2025, 11, 8, tzinfo=UTC), 24) == 120
+    with pytest.raises(ValueError, match="outside"):
+        validate.run_offset(run, datetime(2025, 11, 2, tzinfo=UTC), 24)
+    with pytest.raises(ValueError, match="outside"):
+        validate.run_offset(run, datetime(2025, 11, 8, tzinfo=UTC), 25)
+
+
+@pytest.mark.parametrize("field", ["forecast_from", "fires_assumed_from"])
+def test_run_offset_refuses_unobserved_hours(field):
+    run = FakeRun(**{field: 100})
+    assert validate.run_offset(run, datetime(2025, 11, 3, tzinfo=UTC), 100) == 0
+    with pytest.raises(ValueError, match="observed periods only"):
+        validate.run_offset(run, datetime(2025, 11, 3, tzinfo=UTC), 101)

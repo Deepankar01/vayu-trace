@@ -142,25 +142,61 @@ def segments(first: date, last: date) -> list[tuple[date, datetime, int]]:
 # --- report ---
 
 def _row(sim, obs, cams, start) -> dict:
-    model = metrics(sim, obs)
+    """Model vs measured over hours where both exist; CAMS vs measured over the SAME hours (where
+    CAMS also exists), so the two are comparable; CAMS over all its own hours is `cams_own`."""
+    sim, obs, cams = (np.asarray(a, float) for a in (sim, obs, cams))
+    cams_common = np.where(np.isfinite(sim), cams, np.nan)
     return {
-        "model": model, "cams": metrics(cams, obs),
+        "model": metrics(sim, obs), "cams": metrics(cams_common, obs),
+        "cams_own": metrics(cams, obs),
         "mean_sim": _mean_paired(sim, obs), "mean_measured": _mean_paired(obs, sim),
-        "mean_cams": _mean_paired(cams, obs), "mean_measured_cams": _mean_paired(obs, cams),
-        "hours_measured": int(np.isfinite(np.asarray(obs, float)).sum()),
-        "split": {"model": bias_split(sim, obs, start), "cams": bias_split(cams, obs, start)},
+        "mean_cams": _mean_paired(cams_common, obs),
+        "mean_measured_cams": _mean_paired(obs, cams_common),
+        "hours_measured": int(np.isfinite(obs).sum()),
+        "split": {"model": bias_split(sim, obs, start),
+                  "cams": bias_split(cams_common, obs, start)},
+    }
+
+
+def _r_stats(rows: list[dict]) -> dict:
+    """Per-city correlation summary over the cities of a pool (cities with r for both)."""
+    both = [r for r in rows if r["model"]["r"] is not None and r["cams"]["r"] is not None]
+    out = {"cities": len(both),
+           "model_r_gt_cams_r": sum(r["model"]["r"] > r["cams"]["r"] for r in both)}
+    for src in ("model", "cams"):
+        rs = np.array([r[src]["r"] for r in both], float)
+        out[src] = ({"median": _f(np.median(rs)), "mean": _f(rs.mean()), "min": _f(rs.min()),
+                     "max": _f(rs.max())} if len(rs) else
+                    {"median": None, "mean": None, "min": None, "max": None})
+    return out
+
+
+def measured_gaps(data: dict[str, dict], start: datetime) -> dict:
+    """Which measured hours are missing in every city, and whether each city's set is the same."""
+    sets = {cid: frozenset(np.flatnonzero(~np.isfinite(np.asarray(d["obs"], float))).tolist())
+            for cid, d in data.items()}
+    if not sets:
+        return {"common": [], "identical": True, "extra": {}}
+    common = frozenset.intersection(*sets.values())
+    return {
+        "common": [(start + timedelta(hours=h)).isoformat() for h in sorted(common)],
+        "identical": len(set(sets.values())) == 1,
+        "extra": {cid: len(v - common) for cid, v in sets.items() if v - common},
     }
 
 
 def build_report(data: dict[str, dict], start: datetime, hours: int,
                  pools: dict[str, list[str]]) -> dict:
     """Per-city and pooled rows from {city_id: {sim, obs, cams, stations}} arrays of `hours`.
-    Pooled rows concatenate the cities' hours (so NMB is a ratio of sums over all pairs)."""
+    Pooled rows concatenate the cities' hours (so NMB is a ratio of sums over all pairs, and r
+    is a correlation across all city-hours, which includes differences between cities); their
+    `r_per_city` summarises the cities' own correlations."""
     names = {c.id: c.name for c in CITIES}
     cities = []
     for cid, d in data.items():
         row = _row(d["sim"], d["obs"], d["cams"], start)
         cities.append({"id": cid, "name": names.get(cid, cid), "stations": d["stations"], **row})
+    by_id = {r["id"]: r for r in cities}
     pooled = []
     for pid, ids in pools.items():
         cat = {k: np.concatenate([np.asarray(data[c][k], float) for c in ids])
@@ -171,11 +207,13 @@ def build_report(data: dict[str, dict], start: datetime, hours: int,
                   for part in ("day", "night")}
             for src in ("model", "cams")
         }
+        row["r_per_city"] = _r_stats([by_id[c] for c in ids])
         pooled.append({"id": pid, "name": POOL_NAMES.get(pid, pid), "cities": list(ids), **row})
     return {
         "episode": {"start": start.isoformat(), "hours": hours,
                     "end": (start + timedelta(hours=hours - 1)).isoformat()},
         "min_n": MIN_N, "no_fit": NO_FIT, "cities": cities, "pooled": pooled,
+        "measured_gaps": measured_gaps(data, start),
     }
 
 
@@ -184,8 +222,10 @@ def _pool_split(rows: list[dict], src: str, part: str, start: datetime) -> dict:
     for d in rows:
         day, night = day_night_masks(start, len(d["obs"]))
         mask = day if part == "day" else night
-        sims.append(np.where(mask, np.asarray(d["sim" if src == "model" else "cams"], float),
-                             np.nan))
+        sim = np.asarray(d["sim"], float)
+        val = sim if src == "model" else np.where(np.isfinite(sim), np.asarray(d["cams"], float),
+                                                  np.nan)
+        sims.append(np.where(mask, val, np.nan))
         obss.append(np.asarray(d["obs"], float))
     m = metrics(np.concatenate(sims), np.concatenate(obss))
     return {"n": m["n"], "bias": m["bias"], "nmb": m["nmb"]}
@@ -257,31 +297,74 @@ def reading(report: dict) -> list[str]:
         p = pooled.get(pid)
         if p is None or p["model"]["n"] < MIN_N:
             continue
-        m, c = p["model"], p["cams"]
-        line = (f"- {p['name']}: mean measured {_num(p['mean_measured'])} µg/m³, mean simulated "
-                f"{_num(p['mean_sim'])} µg/m³ (NMB {_num(m['nmb'], '{:+.2f}')}, r "
-                f"{_num(m['r'], '{:.2f}')}")
-        if m["r"] is not None:
-            line += f", r² {m['r'] ** 2:.2f}: the share of hourly variance a linear fit would explain"
-        line += (f"; {_num(m['fac2'], '{:.0%}') if m['fac2'] is not None else '–'} of hours within "
-                 f"a factor of two). CAMS: NMB {_num(c['nmb'], '{:+.2f}')}, r "
-                 f"{_num(c['r'], '{:.2f}')}, FAC2 {_num(c['fac2'], '{:.2f}')}.")
-        out.append(line)
+        m, c, rs = p["model"], p["cams"], p["r_per_city"]
+        out.append(
+            f"- {p['name']}: mean measured {_num(p['mean_measured'])} µg/m³, mean simulated "
+            f"{_num(p['mean_sim'])} µg/m³, CAMS {_num(p['mean_cams'])} µg/m³ over the same "
+            f"hours. NMB {_num(m['nmb'], '{:+.2f}')} for the model and "
+            f"{_num(c['nmb'], '{:+.2f}')} for CAMS; {_pct(m['fac2'])} of the model's hours and "
+            f"{_pct(c['fac2'])} of CAMS's are within a factor of two of the measurement.")
+        out.append(
+            f"- {p['name']}, correlation: the pooled r ({_num(m['r'], '{:.2f}')} model, "
+            f"{_num(c['r'], '{:.2f}')} CAMS) is a correlation across all city-hours and includes "
+            f"differences between cities; it is not hour-to-hour agreement. Within cities the "
+            f"median r is {_num(rs['model']['median'], '{:.2f}')} for the model and "
+            f"{_num(rs['cams']['median'], '{:.2f}')} for CAMS (model range "
+            f"{_num(rs['model']['min'], '{:.2f}')} to {_num(rs['model']['max'], '{:.2f}')}). "
+            f"The model's r exceeds CAMS's in {rs['model_r_gt_cams_r']} of {rs['cities']} "
+            f"cities. With autocorrelated hourly data a small difference in r is not a ranking.")
         sm = p["split"]["model"]
         if sm["day"]["bias"] is not None and sm["night"]["bias"] is not None:
             out.append(f"- {p['name']}, by time of day: mean bias {sm['day']['bias']:+.0f} µg/m³ "
                        f"in daytime hours (10:00-17:59 IST) and {sm['night']['bias']:+.0f} µg/m³ "
                        f"at night (22:00-05:59 IST).")
-    both = [r for r in rows if r["model"]["r"] is not None and r["cams"]["r"] is not None]
+    both = [r for r in rows if r["cams"]["nmb"] is not None]
     if both:
-        better_r = sum(r["model"]["r"] > r["cams"]["r"] for r in both)
-        closer = sum(abs(r["model"]["nmb"]) < abs(r["cams"]["nmb"]) for r in both
-                     if r["cams"]["nmb"] is not None)
-        rs = [r["model"]["r"] for r in both]
-        out.append(f"- Per-city r ranges from {min(rs):.2f} to {max(rs):.2f}. The model's r is "
-                   f"higher than CAMS's in {better_r} of {len(both)} cities, and its |NMB| is "
-                   f"smaller than CAMS's in {closer} of {len(both)}.")
+        closer = sum(abs(r["model"]["nmb"]) < abs(r["cams"]["nmb"]) for r in both)
+        out.append(f"- The model's |NMB| is smaller than CAMS's in {closer} of {len(both)} "
+                   f"cities.")
     return out
+
+
+def _pct(v) -> str:
+    return "–" if v is None else f"{v:.0%}"
+
+
+def _gap_lines(report: dict) -> list[str]:
+    g = report.get("measured_gaps")
+    if not g:
+        return []
+    names = {r["id"]: r["name"] for r in report["cities"]}
+    hours = ", ".join(h[5:13].replace("T", " ") + "Z" for h in g["common"])
+    out = [f"- {len(g['common'])} measured hours are missing in every city"
+           + (f": {hours}." if g["common"] else ".")]
+    if g["identical"]:
+        out.append("- Every city's set of missing hours is exactly this set (checked for all "
+                   "cities).")
+    else:
+        extra = ", ".join(f"{names.get(k, k)} {v}" for k, v in g["extra"].items())
+        out.append(f"- Some cities miss further hours of their own: {extra}.")
+    out.append("- Hours missing in every city point at the CPCB feed or its ingestion into "
+               "OpenAQ rather than single monitors. Missing hours are left missing, never filled.")
+    return out
+
+
+def _r_table(rows: list[dict]) -> list[str]:
+    lines = [("| Pool | pooled r, model | per-city r, model: median / mean (range) | pooled r, CAMS "
+             "| per-city r, CAMS: median / mean (range) | cities where model r > CAMS r |"),
+             "|" + "---|" * 6]
+    for p in rows:
+        rs = p["r_per_city"]
+
+        def summary(src, rs=rs):
+            d = rs[src]
+            return (f"{_num(d['median'], '{:.2f}')} / {_num(d['mean'], '{:.2f}')} "
+                    f"({_num(d['min'], '{:.2f}')} to {_num(d['max'], '{:.2f}')})")
+        lines.append("| " + " | ".join([
+            p["name"], _num(p["model"]["r"], "{:.2f}"), summary("model"),
+            _num(p["cams"]["r"], "{:.2f}"), summary("cams"),
+            f"{rs['model_r_gt_cams_r']} of {rs['cities']}"]) + " |")
+    return lines
 
 
 def render_markdown(report: dict) -> str:
@@ -310,12 +393,18 @@ def render_markdown(report: dict) -> str:
         "Nothing is interpolated."),
         ("- **CAMS**: Copernicus Atmosphere Monitoring Service PM2.5 from the Open-Meteo "
         "air-quality API at the city point, shown as a reference model that does include "
-        "secondary aerosol and transport from outside India."),
+        "secondary aerosol and transport from outside India. CAMS values are instantaneous at "
+        "HH:00 UTC, while model and CPCB values are means over [HH:00, HH+1:00) UTC: about a "
+        "30-minute offset."),
         (f"- **Metrics** over hours where both series exist: n, Pearson r, mean bias "
         f"(simulated minus measured, µg/m³), NMB = Σ(sim − obs) / Σ obs, RMSE (µg/m³), FAC2 = "
         f"share of hours with 0.5 ≤ sim/obs ≤ 2 (obs > 0). Fields are \"–\" when n < {MIN_N}. "
-        "Mean measured and mean simulated are over the same paired hours (CAMS means over the "
-        "CAMS pairs). Pooled rows concatenate the cities' paired hours."),
+        "Mean measured and mean simulated are over the same paired hours. CAMS is compared "
+        "over the SAME hours as the model (hours where simulated, measured and CAMS values all "
+        "exist), so the two rows are comparable. Pooled rows concatenate the cities' paired "
+        "hours: pooled NMB is a ratio of sums, and pooled r is a correlation across all "
+        "city-hours, which includes differences between cities, so it is not hour-to-hour "
+        "agreement; the median per-city r describes that."),
         ("- **Day and night**: hours (UTC [t, t+1)) starting 10:00-17:59 IST are day, 22:00-05:59 "
         "IST night; other hours are in neither."),
         ("- **Hours and runs**: every UTC hour of the episode is used once. Whole 6-day blocks "
@@ -326,7 +415,8 @@ def render_markdown(report: dict) -> str:
         "inflow from outside India (including Pakistani Punjab), road and construction dust "
         "(no gridded inventory), vertical structure (one mixed layer), chemistry; emissions are "
         "annual means with no daily or seasonal cycle. Low readings are expected from these "
-        "omissions; high readings point at transport, mixing or emission placement."),
+        "omissions. Possible causes of other errors include errors in transport, mixing height "
+        "or the placement of emissions; this report does not separate them."),
         "",
         "Runs used:",
         "",
@@ -335,12 +425,16 @@ def render_markdown(report: dict) -> str:
         lines.append(f"- {r['date']}: build `{r['build_id']}` (made {r['made_at']}), hours "
                      f"{r['first_hour']} to {r['last_hour']} UTC")
     lines += ["", "## Pooled", "", *_table(report["pooled"]), "",
+              ("Pooled r is a correlation across all city-hours and includes differences between "
+              "cities; the per-city r summaries describe agreement from hour to hour."), "",
+              *_r_table(report["pooled"]), "",
               "## Per city", "", *_table(report["cities"]), "",
               "## Bias by time of day", "", *_split_table(report["pooled"] + report["cities"]),
               "", "## Reading", "", *reading(report)]
     missing = report.get("missing", [])
-    if missing:
-        lines += ["", "## Missing", "", *[f"- {m}" for m in missing]]
+    gaps = _gap_lines(report)
+    if missing or gaps:
+        lines += ["", "## Missing", "", *gaps, *[f"- {m}" for m in missing]]
     return "\n".join(lines) + "\n"
 
 
@@ -355,6 +449,22 @@ def _with_retries(what: str, fn: Callable, attempts: int = 4, wait_s: float = 60
                 raise
             print(f"  {what}: {exc}; retrying in {wait_s:.0f} s", file=sys.stderr)
             time.sleep(wait_s)
+
+
+def run_offset(run, first: datetime, n: int) -> int:
+    """Index in `run` of the hour starting at `first`, checking that `n` hours from there lie in
+    the run's window and are all observed: validation never uses forecast hours or hours with
+    assumed (persistence) fires."""
+    off = int((first - run.start) / timedelta(hours=1))
+    if off < 0 or off + n > run.hours:
+        raise ValueError(f"hours {first:%Y-%m-%d %H}Z +{n} h lie outside run {run.run_id} "
+                         f"({run.start:%Y-%m-%d %H}Z +{run.hours} h)")
+    for name in ("forecast_from", "fires_assumed_from"):
+        limit = getattr(run, name)
+        if limit is not None and off + n > limit:
+            raise ValueError(f"run {run.run_id} has {name}={limit}: hours {off}..{off + n - 1} "
+                             f"are not all observed; validation covers observed periods only")
+    return off
 
 
 def _sim_for_run(run) -> dict[str, list]:
@@ -378,7 +488,7 @@ def collect(first: date, last: date, now: datetime, cities: list[City]) -> tuple
         run = _with_retries(f"run {run_day}", lambda d=run_day: run_date(
             d, now, lambda f, s: print(f"  {f:4.0%} {s}", file=sys.stderr)))
         series = _sim_for_run(run)
-        off = int((seg_start - run.start) / timedelta(hours=1))
+        off = run_offset(run, seg_start, n)
         at = int((seg_start - start) / timedelta(hours=1))
         for c in cities:
             total = simulated_total(series[c.id]["by_tag"], run.hours)
