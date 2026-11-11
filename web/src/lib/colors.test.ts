@@ -19,6 +19,10 @@ describe("pm25Ramp", () => {
     expect(pm25Ramp(600)[3]).toBe(215);
   });
 
+  it("saturates at the 400+ colour for Infinity", () => {
+    expect(pm25Ramp(Infinity)).toEqual([0x5a, 0x0f, 0x1c, 215]);
+  });
+
   it("returns integer channels in 0..255", () => {
     for (let v = 0; v <= 600; v += 7) {
       for (const c of pm25Ramp(v)) {
@@ -57,7 +61,22 @@ describe("aqiColor", () => {
     expect(aqiColor(450)).toBe("#b3202a");
   });
 
+  it("rounds to the nearest integer before banding", () => {
+    expect(aqiColor(50.4)).toBe("#5fd38d");
+    expect(aqiColor(50.5)).toBe("#b6d96a");
+    expect(aqiColor(100.4)).toBe("#b6d96a");
+    expect(aqiColor(100.5)).toBe("#f2d15c");
+  });
+
+  it("treats negative as invalid grey, Infinity as Severe, zero as Good", () => {
+    expect(aqiColor(-1)).toBe("#8b93a5");
+    expect(aqiColor(-0.4)).toBe("#8b93a5");
+    expect(aqiColor(0)).toBe("#5fd38d");
+    expect(aqiColor(Infinity)).toBe("#b3202a");
+  });
+
   it("is mute grey for missing values", () => {
+    expect(aqiColor(null)).toBe("#8b93a5");
     expect(aqiColor(NaN)).toBe("#8b93a5");
     expect(aqiColor(undefined)).toBe("#8b93a5");
   });

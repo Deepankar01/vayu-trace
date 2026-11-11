@@ -7,6 +7,7 @@ export default defineConfig({
   build: { chunkSizeWarningLimit: 2000 }, // maplibre + deck.gl are inherently large
   server: {
     port: 5173,
+    strictPort: true,
     proxy: { "/api": "http://localhost:8000" },
   },
   test: {

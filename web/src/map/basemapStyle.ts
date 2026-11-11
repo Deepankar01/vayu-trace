@@ -35,3 +35,20 @@ export function labelLayerIds(layers: StyleLayerLike[]): string[] {
 export function firstLineOrSymbolId(layers: StyleLayerLike[]): string | undefined {
   return layers.find((l) => l.type === "line" || l.type === "symbol")?.id;
 }
+
+/** Id of the first label layer: our boundary lines (and later deck.gl layers) sit beneath it. */
+export function firstSymbolId(layers: StyleLayerLike[]): string | undefined {
+  return layers.find((l) => l.type === "symbol")?.id;
+}
+
+export const LABEL_OPACITY = 0.55;
+
+/**
+ * New opacity for a softened label: a flat factor when nothing is set, otherwise the factor
+ * multiplied into the existing value/expression so zoom fades are preserved.
+ */
+export function softenedOpacity(existing: unknown, factor = LABEL_OPACITY): unknown {
+  if (existing == null) return factor;
+  if (typeof existing === "number") return existing * factor;
+  return ["*", factor, existing];
+}

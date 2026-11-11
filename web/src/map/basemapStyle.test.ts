@@ -1,4 +1,4 @@
-import { boundaryLayerIds, firstLineOrSymbolId, labelLayerIds } from "./basemapStyle";
+import { boundaryLayerIds, firstLineOrSymbolId, firstSymbolId, labelLayerIds, softenedOpacity } from "./basemapStyle";
 
 const layers = [
   { id: "background", type: "background" },
@@ -28,5 +28,26 @@ describe("basemap layer selection", () => {
   it("finds the first line or symbol layer", () => {
     expect(firstLineOrSymbolId(layers)).toBe("boundary_county");
     expect(firstLineOrSymbolId([layers[0], layers[1]])).toBeUndefined();
+  });
+});
+
+describe("firstSymbolId", () => {
+  it("finds the first label layer, skipping lines", () => {
+    expect(firstSymbolId(layers)).toBe("place_city_r6");
+    expect(firstSymbolId([layers[0]])).toBeUndefined();
+  });
+});
+
+describe("softenedOpacity", () => {
+  it("uses a flat factor when nothing is set", () => {
+    expect(softenedOpacity(undefined)).toBe(0.55);
+    expect(softenedOpacity(null)).toBe(0.55);
+  });
+  it("scales a numeric value", () => {
+    expect(softenedOpacity(0.5, 0.5)).toBe(0.25);
+  });
+  it("multiplies into an existing expression, preserving it", () => {
+    const fade = ["interpolate", ["linear"], ["zoom"], 4, 0, 5, 1];
+    expect(softenedOpacity(fade)).toEqual(["*", 0.55, fade]);
   });
 });

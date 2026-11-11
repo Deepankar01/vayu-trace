@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:outline": "node scripts/build-outline.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "^9.4.1",

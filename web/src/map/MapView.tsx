@@ -10,7 +10,9 @@ import {
   TERRAIN_TILES,
   boundaryLayerIds,
   firstLineOrSymbolId,
+  firstSymbolId,
   labelLayerIds,
+  softenedOpacity,
 } from "./basemapStyle";
 
 // MapLibre 6 locates its worker next to its own module, which breaks under Vite dep pre-bundling.
@@ -21,13 +23,30 @@ export const INITIAL_VIEW = { center: [79, 27] as [number, number], zoom: 4.6, p
 const MAX_BOUNDS: [[number, number], [number, number]] = [[60, 2], [104, 42]];
 const TERRAIN_EXAGGERATION = 1.4;
 
+/** Stable ids of the layers this component adds. */
+export const LAYER_IDS = {
+  hillshade: "hillshade",
+  stateLines: "india-state-lines",
+  outline: "india-outline-line",
+} as const;
+
+export interface MapReadyInfo {
+  /**
+   * Id of the first basemap label layer (undefined if the style has none). Use as `beforeId` for
+   * layers that should sit under place names; our boundary lines are already placed here.
+   */
+  labelsBelowId: string | undefined;
+}
+
 export interface MapViewProps {
   /** deck.gl layers drawn (interleaved) on top of the basemap. */
   layers?: Layer[];
   /** 3D terrain on/off. Hillshade stays on either way so relief still reads when flat. */
   terrain?: boolean;
   /** Called once the style (and our boundary/terrain layers) are loaded. */
-  onMapReady?: (map: maplibregl.Map) => void;
+  onMapReady?: (map: maplibregl.Map, info: MapReadyInfo) => void;
+  /** Style fetch failures, setup exceptions and map runtime errors, as a message. */
+  onError?: (message: string) => void;
 }
 
 const demSource = (): maplibregl.RasterDEMSourceSpecification => ({
@@ -39,25 +58,27 @@ const demSource = (): maplibregl.RasterDEMSourceSpecification => ({
   attribution: TERRAIN_ATTRIBUTION,
 });
 
-function setupMap(map: maplibregl.Map, terrain: boolean) {
+function setupMap(map: maplibregl.Map, terrain: boolean): MapReadyInfo {
   const style = map.getStyle();
   const layers = style.layers ?? [];
   const below = firstLineOrSymbolId(layers);
+  const labelsBelowId = firstSymbolId(layers);
 
   // The basemap's own boundaries are hidden; ours (official GoI depiction) replace them.
   for (const id of boundaryLayerIds(layers)) map.setLayoutProperty(id, "visibility", "none");
   // Subdue place names: the data is the subject.
   for (const id of labelLayerIds(layers)) {
-    map.setPaintProperty(id, "text-opacity", 0.55);
-    map.setPaintProperty(id, "icon-opacity", 0.55);
+    for (const prop of ["text-opacity", "icon-opacity"] as const) {
+      map.setPaintProperty(id, prop, softenedOpacity(map.getPaintProperty(id, prop)) as never);
+    }
   }
 
   // Separate DEM sources for hillshade and terrain (MapLibre advises against sharing one).
   map.addSource("terrain-dem", demSource());
-  map.addSource("hillshade-dem", { ...demSource(), attribution: undefined });
+  map.addSource("hillshade-dem", demSource());
   map.addLayer(
     {
-      id: "hillshade",
+      id: LAYER_IDS.hillshade,
       type: "hillshade",
       source: "hillshade-dem",
       paint: {
@@ -72,31 +93,38 @@ function setupMap(map: maplibregl.Map, terrain: boolean) {
 
   map.addSource("india-states", { type: "geojson", data: "/india-boundary.geojson" });
   map.addSource("india-outline", { type: "geojson", data: "/india-outline.geojson" });
-  map.addLayer({
-    id: "india-state-lines",
-    type: "line",
-    source: "india-states",
-    paint: { "line-color": "rgba(255,255,255,0.18)", "line-width": 0.6 },
-  });
-  map.addLayer({
-    id: "india-outline-line",
-    type: "line",
-    source: "india-outline",
-    layout: { "line-join": "round" },
-    paint: { "line-color": "rgba(255,255,255,0.35)", "line-width": 1 },
-  });
+  map.addLayer(
+    {
+      id: LAYER_IDS.stateLines,
+      type: "line",
+      source: "india-states",
+      paint: { "line-color": "rgba(255,255,255,0.18)", "line-width": 0.6 },
+    },
+    labelsBelowId,
+  );
+  map.addLayer(
+    {
+      id: LAYER_IDS.outline,
+      type: "line",
+      source: "india-outline",
+      layout: { "line-join": "round" },
+      paint: { "line-color": "rgba(255,255,255,0.35)", "line-width": 1 },
+    },
+    labelsBelowId,
+  );
 
   map.setTerrain(terrain ? { source: "terrain-dem", exaggeration: TERRAIN_EXAGGERATION } : null);
+  return { labelsBelowId };
 }
 
-export function MapView({ layers = [], terrain = true, onMapReady }: MapViewProps) {
+export function MapView({ layers = [], terrain = true, onMapReady, onError }: MapViewProps) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const readyRef = useRef(false);
   // Latest props, readable from the one-time load handler.
-  const latest = useRef({ layers, terrain, onMapReady });
-  latest.current = { layers, terrain, onMapReady };
+  const latest = useRef({ layers, terrain, onMapReady, onError });
+  latest.current = { layers, terrain, onMapReady, onError };
 
   useEffect(() => {
     const map = new maplibregl.Map({
@@ -115,10 +143,20 @@ export function MapView({ layers = [], terrain = true, onMapReady }: MapViewProp
     mapRef.current = map;
     overlayRef.current = overlay;
 
+    const report = (message: string, err?: unknown) => {
+      console.error(`[MapView] ${message}`, err ?? "");
+      latest.current.onError?.(message);
+    };
+    map.on("error", (e) => report(`Map error: ${e.error?.message ?? "unknown"}`, e.error));
+
     map.once("load", () => {
-      setupMap(map, latest.current.terrain);
-      readyRef.current = true;
-      latest.current.onMapReady?.(map);
+      try {
+        const info = setupMap(map, latest.current.terrain);
+        readyRef.current = true;
+        latest.current.onMapReady?.(map, info);
+      } catch (err) {
+        report(`Map setup failed: ${err instanceof Error ? err.message : String(err)}`, err);
+      }
     });
 
     return () => {

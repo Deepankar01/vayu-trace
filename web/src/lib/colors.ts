@@ -45,8 +45,13 @@ const AQI_BANDS: { max: number; color: string }[] = [
   { max: Infinity, color: "#b3202a" }, // Severe
 ];
 
-/** CPCB category colour for an AQI value; grey when missing. */
+/**
+ * CPCB category colour for an AQI value. AQI arrives as a float, so it is rounded to the nearest
+ * integer first and then banded (50.4 -> Good, 50.5 -> Satisfactory). Missing, NaN or negative
+ * values are invalid and return the mute grey; Infinity is Severe.
+ */
 export function aqiColor(aqi: number | null | undefined): string {
-  if (aqi == null || Number.isNaN(aqi)) return MUTE;
-  return AQI_BANDS.find((b) => aqi <= b.max)!.color;
+  if (aqi == null || Number.isNaN(aqi) || aqi < 0) return MUTE;
+  const rounded = Math.round(aqi);
+  return AQI_BANDS.find((b) => rounded <= b.max)!.color;
 }
