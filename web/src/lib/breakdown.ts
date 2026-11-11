@@ -151,3 +151,18 @@ export function arrival(fireSeries: readonly (number | null)[], hour: number, ag
   }
   return { kind: "none" };
 }
+
+/**
+ * True when the breakdown at this hour is incomplete: some tag with a non-zero weight (missing
+ * weights default to 1.0, as in `breakdown`) is null/NaN, so `breakdown` skips it and its rows
+ * and totals under-count. The UI marks such a breakdown as incomplete.
+ */
+export function breakdownIncomplete(
+  byTagNow: Readonly<Record<string, number | null>>,
+  weights: Readonly<Record<string, number>>,
+): boolean {
+  return Object.keys(byTagNow).some((id) => {
+    const v = byTagNow[id];
+    return (v == null || !Number.isFinite(v)) && (weights[id] ?? 1.0) !== 0;
+  });
+}

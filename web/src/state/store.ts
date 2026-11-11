@@ -7,12 +7,13 @@
  */
 import { create } from "zustand";
 import { ApiClient, ApiError, errorMessage, isAbort } from "../api/client";
+import { HAZE } from "../api/decode";
 import { FrameCache } from "../api/frameCache";
 import type { Fire, Meta, Sector, SourceRequest } from "../api/types";
 import type { Weights } from "../lib/compose";
 import {
-  DEFAULT_SLIDERS, FIRE_SCALING_RANGE, NO_SCENARIO, SLIDER_RANGE, isFireAssumedHour, isForecastHour,
-  selectBaselineWeights, selectWeights, type RegionScenario, type Sliders,
+  DEFAULT_SLIDERS, FIRE_SCALING_RANGE, NO_SCENARIO, SLIDER_RANGE, createWeightSelectors, isFireAssumedHour,
+  isForecastHour, type RegionScenario, type Sliders,
 } from "./weights";
 
 export type RunPhase = "idle" | "running" | "loading" | "ready" | "error";
@@ -20,6 +21,8 @@ export type Speed = 1 | 2 | 4 | 8;
 export const SPEEDS: readonly Speed[] = [1, 2, 4, 8];
 export const POLL_INTERVAL_MS = 1000;
 export const REFRESH_NOTICE = "Run refreshed; added sources were removed";
+export const MAX_AUTO_REBUILDS = 2;
+export const REBUILD_LOOP = "The run keeps being rebuilt on the server; start the run again.";
 export const RUN_LOST = "run not found; start again";
 
 export interface Layers {
@@ -125,7 +128,9 @@ export function createAppStore(deps: StoreDeps = {}) {
   let runAbort: AbortController | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let cityAbort: AbortController | null = null;
-  let rebuilding: Promise<void> | null = null;
+  let rebuilding: { token: number; promise: Promise<void> } | null = null;
+  let autoRebuilds = 0; // consecutive 409 rebuilds with no frame loaded in between
+  const selectors = createWeightSelectors();
   let client!: ApiClient; // assigned by the (synchronous) state initialiser below
   let frames!: FrameCache;
 
@@ -137,16 +142,26 @@ export function createAppStore(deps: StoreDeps = {}) {
       fetch: deps.fetch,
       baseUrl: deps.baseUrl,
       getBuild: () => get().meta?.build_id ?? null,
-      onRebuilt: (newBuild) => rebuild(newBuild),
+      onRebuilt: (newBuild, sent) => rebuild(newBuild, sent),
     });
 
     frames = new FrameCache({
       fetchFrame: (hour, extras, signal) => {
         const runId = get().runId;
         if (!runId) return Promise.reject(new Error("no run"));
-        return client.getFrame(runId, hour, extras, signal);
+        return client.getFrame(runId, hour, extras, signal).then((frame) => {
+          const known = new Set(get().meta?.tags.map((t) => t.id));
+          for (const id of frame.tags.keys()) {
+            if (id !== HAZE && !known.has(id)) throw new Error(`frame has tag '${id}' that the run's meta does not list`);
+          }
+          return frame;
+        });
       },
       onChange: () => set((s) => ({ frameVersion: s.frameVersion + 1 })),
+      onFrame: () => {
+        autoRebuilds = 0;
+        if (get().frameError !== null) set({ frameError: null });
+      },
       onError: (hour, e) => set({ frameError: `frame for hour ${hour}: ${errorMessage(e)}` }),
     });
 
@@ -160,6 +175,9 @@ export function createAppStore(deps: StoreDeps = {}) {
 
     /** Install a meta: user sources, playhead clamp, frame window. */
     const applyMeta = (meta: Meta, keepUserState: boolean) => {
+      const known = new Set(meta.tags.map((t) => t.id));
+      const orphan = meta.cities.flatMap((c) => Object.keys(c.by_tag)).find((id) => !known.has(id));
+      if (orphan) set({ error: `city series has tag '${orphan}' that the run's meta does not list` });
       const hour = clamp(get().hour, 0, Math.max(0, meta.hours.length - 1));
       set((s) => ({
         meta, hour,
@@ -173,36 +191,63 @@ export function createAppStore(deps: StoreDeps = {}) {
 
     const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+    const abortError = () => new DOMException("run superseded", "AbortError");
+
     /**
-     * The single 409 path (single flight). Run rebuilt (`newBuild` a string): drop cached frames,
-     * refetch meta. Run expired or gone (null): drop frames, POST the run again, poll until it is
-     * ready, then refetch meta. Added sources belong to a build, so they are cleared either way
-     * (meta carries the new build's) and `notice` says so.
+     * The single 409 path (single flight per run). `sentBuild` is the build the failed request
+     * carried: the event is ignored when that is no longer the current build (a late 409 for an
+     * already superseded build) or when `newBuild` is the current build. Run rebuilt (`newBuild`
+     * a string): drop cached frames, refetch meta. Run expired or gone (null): drop frames, POST
+     * the run again, poll until ready, then refetch meta. Added sources belong to a build, so
+     * they are cleared either way and `notice` says so; fires are refetched (per build). While it
+     * runs status is "running"; a failure lands in `error`. At most MAX_AUTO_REBUILDS in a row.
+     * Everything is tied to the run token: starting another run abandons it.
      */
-    function rebuild(newBuild: string | null): Promise<void> {
-      if (rebuilding) return rebuilding;
+    function rebuild(newBuild: string | null, sentBuild: string): Promise<void> {
+      const token = runToken;
       const runId = get().runId;
-      rebuilding = (async () => {
-        try {
-          if (!runId) throw new Error("no run");
-          frames.clear();
-          if (newBuild === null) {
-            await client.postRun(runId);
-            for (;;) {
-              const st = await client.getRunStatus(runId);
-              if (st.status === "ready") break;
-              if (st.status === "error") throw new Error(st.error ?? "the run failed");
-              set({ progress: st.progress, stage: st.stage });
-              await sleep(POLL_INTERVAL_MS);
+      const current = get().meta?.build_id ?? null;
+      if (!runId || sentBuild !== current || (newBuild !== null && newBuild === current)) return Promise.resolve();
+      if (rebuilding && rebuilding.token === token) return rebuilding.promise;
+      if (autoRebuilds >= MAX_AUTO_REBUILDS) {
+        set({ status: "error", error: REBUILD_LOOP });
+        return Promise.reject(new Error(REBUILD_LOOP));
+      }
+      autoRebuilds++;
+      const signal = runAbort?.signal;
+      const checked = <T,>(v: T): T => {
+        if (stale(token)) throw abortError();
+        return v;
+      };
+      const mine: { token: number; promise: Promise<void> } = { token, promise: Promise.resolve() };
+      mine.promise = (async () => {
+          try {
+            set({ status: "running", stage: "refreshing run", progress: 0, error: null });
+            frames.clear();
+            if (newBuild === null) {
+              checked(await client.postRun(runId, signal));
+              for (;;) {
+                const st = checked(await client.getRunStatus(runId, signal));
+                if (st.status === "ready") break;
+                if (st.status === "error") throw new Error(st.error ?? "the run failed");
+                set({ progress: st.progress, stage: st.stage });
+                await sleep(POLL_INTERVAL_MS);
+                checked(undefined);
+              }
             }
+            const meta = checked(await client.getMeta(runId, signal));
+            applyMeta(meta, false);
+            set({ status: "ready", notice: REFRESH_NOTICE, fires: null });
+            loadFires(token, runId, signal);
+          } catch (e) {
+            if (!stale(token) && !isAbort(e)) set({ status: "error", error: errorMessage(e) });
+            throw e;
+          } finally {
+            if (rebuilding === mine) rebuilding = null;
           }
-          applyMeta(await client.getMeta(runId), false);
-          set({ notice: REFRESH_NOTICE });
-        } finally {
-          rebuilding = null;
-        }
-      })();
-      return rebuilding;
+        })();
+      rebuilding = mine;
+      return mine.promise;
     }
 
     // --- run lifecycle ---
@@ -223,10 +268,14 @@ export function createAppStore(deps: StoreDeps = {}) {
       set({ status: "loading", progress: 1, stage: "loading results" });
       const meta = await client.getMeta(runId, signal);
       if (stale(token)) return;
-      applyMeta(meta, false);
       set({ status: "ready", error: null, fireScaling: meta.notes.fire_scaling_default });
+      applyMeta(meta, false); // may set `error` (inconsistent meta), so it comes last
       const city = get().selectedCity;
       if (city) fetchCityData(city);
+      loadFires(token, runId, signal);
+    }
+
+    function loadFires(token: number, runId: string, signal?: AbortSignal) {
       client.getFires(runId, signal).then(
         (fires) => !stale(token) && set({ fires, firesError: null }),
         (e) => !stale(token) && !isAbort(e) && set({ firesError: errorMessage(e) }),
@@ -315,6 +364,7 @@ export function createAppStore(deps: StoreDeps = {}) {
         const token = ++runToken;
         clearPoll();
         runAbort?.abort();
+        autoRebuilds = 0;
         abortCity();
         frames.dispose();
         const controller = (runAbort = new AbortController());
@@ -397,7 +447,7 @@ export function createAppStore(deps: StoreDeps = {}) {
           const { id, label, color } = res.tag;
           const cities = meta.cities.map((c) => {
             const series = res.by_city[c.id];
-            return series?.some((v) => v) ? { ...c, by_tag: { ...c.by_tag, [id]: series } } : c;
+            return series && !series.every((v) => v === 0) ? { ...c, by_tag: { ...c.by_tag, [id]: series } } : c;
           });
           set((s) => ({
             meta: { ...meta, cities, tags: [...meta.tags, { id, kind: "user", sector: null, region: null, label, color }] },
@@ -415,8 +465,8 @@ export function createAppStore(deps: StoreDeps = {}) {
         if (id) fetchCityData(id);
       },
 
-      weights: () => selectWeights(get()),
-      baselineWeights: () => selectBaselineWeights(get()),
+      weights: () => selectors.weights(get()),
+      baselineWeights: () => selectors.baselineWeights(get()),
       isForecastHour: (h) => isForecastHour(get().meta, h),
       isFireAssumedHour: (h) => isFireAssumedHour(get().meta, h),
     };

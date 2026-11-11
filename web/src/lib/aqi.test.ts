@@ -21,7 +21,7 @@ describe("pm25ToAqi", () => {
       const pm = c.pm25 === "Infinity" ? Infinity : c.pm25 === "-Infinity" ? -Infinity : (c.pm25 as number);
       const got = pm25ToAqi(pm);
       if (c.aqi === "NaN") expect(got).toBeNaN();
-      else expect(Math.abs(got - (c.aqi as number))).toBeLessThanOrEqual(1e-9 * Math.max(1, Math.abs(c.aqi as number)));
+      else expect(got).toBe(c.aqi as number); // same double operations as numpy.interp: identical
     }
   });
 });

@@ -12,20 +12,22 @@ export type Weights = Record<string, number>;
  *
  * - Tags are visited in sorted id order and accumulated in float32, so the result is
  *   deterministic and does not depend on the frame's tag order.
- * - A tag with weight 0 (or no entry in `weights`: only listed tags are summed) is skipped
- *   entirely, so its missing cells do not poison the result. All weights 0 gives all zeros.
+ * - A tag with weight 0 is skipped entirely, so its missing cells do not poison the result. All
+ *   weights 0 gives all zeros. A concentration tag present in the frame with NO entry in
+ *   `weights` is a bug (stale weights), not a zero: it throws.
  * - Missing stays missing: a cell is NaN if ANY contributing tag (non-zero weight) is missing
  *   (code 65535) there. Never zero-filled.
  * - `__haze` is a multiplicative factor, not a concentration, and is never summed. With
  *   `opts.haze` the result is multiplied by it (drawing opacity only; a missing haze cell
- *   makes the cell NaN).
+ *   makes the cell NaN; a frame without `__haze` throws, the server always sends it).
  */
 export function composeField(frame: Frame, weights: Weights, opts: { haze?: boolean } = {}): Float32Array {
   const out = new Float32Array(frame.nx * frame.ny);
   const ids = [...frame.tags.keys()].filter((id) => id !== HAZE).sort();
   for (const id of ids) {
     const w = weights[id];
-    if (w === undefined || w === 0) continue;
+    if (w === undefined) throw new Error(`no weight for source tag '${id}'`);
+    if (w === 0) continue;
     const { data, scale } = frame.tags.get(id)!;
     const k = scale * w;
     for (let i = 0; i < out.length; i++) {
@@ -36,11 +38,10 @@ export function composeField(frame: Frame, weights: Weights, opts: { haze?: bool
   }
   if (opts.haze) {
     const haze = frame.tags.get(HAZE);
-    if (haze) {
-      for (let i = 0; i < out.length; i++) {
-        const c = haze.data[i];
-        out[i] = c === NAN_CODE ? NaN : out[i] * (c * haze.scale);
-      }
+    if (!haze) throw new Error("frame has no __haze tag");
+    for (let i = 0; i < out.length; i++) {
+      const c = haze.data[i];
+      out[i] = c === NAN_CODE ? NaN : out[i] * (c * haze.scale);
     }
   }
   return out;
@@ -75,38 +76,32 @@ export function cityByTagAt(city: Pick<CityMeta, "by_tag">, h: number): Record<s
 
 /**
  * Weighted city total per hour (ug/m3) from the meta per-tag series: sum over tags in sorted id
- * order of `value * weight`, left to right.
- *
- * Tags with weight 0 or no weight entry are skipped. A null value of a contributing tag adds
- * nothing; the hour is null only when EVERY contributing tag is null. If no tag contributes
- * (all weights 0, or the city has no non-zero tags at all) the result is 0 unless the city's
- * own tags are all null at that hour, in which case it is null: missing is never zero-filled.
- * The server omits a tag only when its series is entirely exact zeros (a series with any null is
- * kept), so an absent tag counts as zeros and a present one's null is missing. Pass `nHours`
- * (meta.hours.length) so a city with no tags at all still yields `nHours` zeros.
+ * order of `value * weight`, left to right. Same rule as `composeField`:
+ * - tags with weight 0 are skipped; a tag in `by_tag` with NO entry in `weights` throws;
+ * - missing stays missing: if ANY contributing tag (non-zero weight) is null at an hour, that
+ *   hour's total is null (never an under-estimate);
+ * - the server omits a tag only when its series is entirely exact zeros (a series with any null
+ *   is kept), so an absent tag counts as zeros and a present one's null is missing;
+ * - with nothing contributing the total is 0. Pass `nHours` (meta.hours.length) so a city with no
+ *   tags at all still yields `nHours` zeros.
  */
 export function cityTotals(city: Pick<CityMeta, "by_tag">, weights: Weights, nHours = 0): (number | null)[] {
   const ids = Object.keys(city.by_tag).sort();
-  const contributing = ids.filter((id) => (weights[id] ?? 0) !== 0);
-  const probe = contributing.length > 0 ? contributing : ids;
+  for (const id of ids) {
+    if (weights[id] === undefined) throw new Error(`no weight for source tag '${id}'`);
+  }
+  const contributing = ids.filter((id) => weights[id] !== 0);
   const hours = ids.reduce((n, id) => Math.max(n, city.by_tag[id].length), nHours);
   const out: (number | null)[] = [];
   for (let h = 0; h < hours; h++) {
-    let any = probe.length === 0; // no series at all: nothing is missing, the total is 0
-    for (const id of probe) {
-      if (city.by_tag[id][h] != null) {
-        any = true;
-        break;
-      }
-    }
-    if (!any) {
-      out.push(null);
-      continue;
-    }
-    let total = 0;
+    let total: number | null = 0;
     for (const id of contributing) {
       const v = city.by_tag[id][h];
-      if (v != null) total += v * weights[id];
+      if (v == null) {
+        total = null;
+        break;
+      }
+      total += v * weights[id];
     }
     out.push(total);
   }

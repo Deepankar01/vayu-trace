@@ -21,9 +21,16 @@ describe("composeField", () => {
     expect([...composeField(f, { vehicles_delhi_ncr: 0, dust_punjab: 0 })]).toEqual([0, 0, 0, 0]);
   });
 
-  it("treats a tag without a weight as skipped and ignores weights for absent tags", () => {
-    const out = composeField(frame(), { vehicles_delhi_ncr: 2, fire_punjab: 9 });
+  it("throws for a frame tag with no weight entry, and ignores weights for absent tags", () => {
+    expect(() => composeField(frame(), { vehicles_delhi_ncr: 2 })).toThrow(/no weight for source tag 'dust_punjab'/);
+    const out = composeField(frame(), { vehicles_delhi_ncr: 2, dust_punjab: 0, fire_punjab: 9 });
     a.forEach((x, i) => expect(near(out[i], 2 * x)).toBe(true));
+  });
+
+  it("does not require a weight for __haze, but opts.haze needs the tag", () => {
+    const f = makeFrame(2, 2, { vehicles_delhi_ncr: a }, [1, 1, 1, 1]);
+    expect(() => composeField(f, { vehicles_delhi_ncr: 1 })).not.toThrow();
+    expect(() => composeField(frame(), { vehicles_delhi_ncr: 1, dust_punjab: 1 }, { haze: true })).toThrow(/__haze/);
   });
 
   it("keeps missing cells missing when a contributing tag is NaN", () => {
@@ -81,22 +88,24 @@ describe("cityTotals / cityByTagAt", () => {
   };
 
   it("sums value x weight per hour", () => {
-    const t = cityTotals(city, { vehicles_delhi_ncr: 0.5, fire_punjab: 2, user_1: 1 });
-    expect(t).toEqual([5 + 2 + 0, 10, 0, 8 + 5]); // user_1 is a real 0 at hour 2
+    const full = { by_tag: { vehicles_delhi_ncr: [10, 20], fire_punjab: [1, 2], user_1: [0, 5] } };
+    expect(cityTotals(full, { vehicles_delhi_ncr: 0.5, fire_punjab: 2, user_1: 1 })).toEqual([7, 10 + 4 + 5]);
   });
 
-  it("is null only where every contributing tag is null; zero-weight tags do not count", () => {
-    expect(cityTotals(city, { vehicles_delhi_ncr: 1 })).toEqual([10, 20, null, null]);
-    expect(cityTotals(city, { fire_punjab: 1 })).toEqual([1, null, null, 4]);
-    expect(cityTotals(city, { fire_punjab: 1, vehicles_delhi_ncr: 1 })).toEqual([11, 20, null, 4]);
+  it("is null where ANY contributing tag is null (never an under-estimate); zero-weight tags are skipped", () => {
+    const w = { vehicles_delhi_ncr: 1, fire_punjab: 1, user_1: 1 };
+    expect(cityTotals(city, w)).toEqual([11, null, null, null]);
+    expect(cityTotals(city, { ...w, fire_punjab: 0 })).toEqual([10, 20, null, null]);
   });
 
-  it("with nothing contributing gives 0, except where all the city's series are missing", () => {
-    expect(cityTotals(city, {})).toEqual([0, 0, 0, 0]);
-    const gap = { by_tag: { vehicles_delhi_ncr: [1, null], fire_punjab: [2, null] } };
-    expect(cityTotals(gap, { vehicles_delhi_ncr: 0, fire_punjab: 0 })).toEqual([0, null]);
+  it("throws for a tag in by_tag with no weight entry", () => {
+    expect(() => cityTotals(city, { vehicles_delhi_ncr: 1 })).toThrow(/no weight for source tag 'fire_punjab'/);
+  });
+
+  it("with nothing contributing gives zeros, and absent tags count as zeros", () => {
+    expect(cityTotals(city, { vehicles_delhi_ncr: 0, fire_punjab: 0, user_1: 0 })).toEqual([0, 0, 0, 0]);
     expect(cityTotals({ by_tag: {} }, { vehicles_delhi_ncr: 1 })).toEqual([]);
-    expect(cityTotals({ by_tag: {} }, { vehicles_delhi_ncr: 1 }, 3)).toEqual([0, 0, 0]); // absent tags are zeros
+    expect(cityTotals({ by_tag: {} }, { vehicles_delhi_ncr: 1 }, 3)).toEqual([0, 0, 0]);
   });
 
   it("is deterministic in sorted tag-id order", () => {

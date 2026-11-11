@@ -3,8 +3,7 @@
  *
  * Build rule: every run-derived request (frames, wind, fires, path, cams, measured, sources)
  * carries `?build={current build id}`. When the server answers 409 ("run was rebuilt", with the
- * new `build_id`; or "run expired", `build_id` null) or 404 to a request that carried a build
- * (the run vanished; same as expired) the client calls `onRebuilt` ONCE (the store drops its cached frames and refetches meta there, so the next
+ * new `build_id`; or "run expired", `build_id` null) the client calls `onRebuilt` ONCE (the store drops its cached frames and refetches meta there, so the next
  * `getBuild()` returns the new id) and then repeats the request a single time. This is the only
  * place that handles 409.
  */
@@ -29,11 +28,11 @@ export interface ClientOptions {
   /** The build id of the loaded meta (null before it is loaded: no `build` is sent). */
   getBuild?: () => string | null;
   /**
-   * Called after a 409 (run rebuilt: `newBuildId` is a string; run expired: null), or a 404 on a
-   * request that carried `?build=` (treated as expired: null), before the retry. Must leave
-   * `getBuild()` returning the new build.
+   * Called after a 409, before the retry: `newBuildId` is the new build (run rebuilt) or null
+   * (run expired or gone); `sentBuild` is the build id that the failed request carried, captured
+   * before it was sent. Must leave `getBuild()` returning the new build.
    */
-  onRebuilt?: (newBuildId: string | null) => Promise<void>;
+  onRebuilt?: (newBuildId: string | null, sentBuild: string) => Promise<void>;
 }
 
 interface Req {
@@ -68,9 +67,8 @@ export class ApiClient {
     this.baseUrl = opts.baseUrl ?? "/api";
   }
 
-  private url(path: string, req: Req): string {
+  private url(path: string, req: Req, build: string | null): string {
     const q: string[] = [];
-    const build = req.build === false ? null : (this.opts.getBuild?.() ?? null);
     if (build) q.push(`build=${encodeURIComponent(build)}`);
     if (req.query) q.push(req.query);
     return `${this.baseUrl}${path}${q.length ? `?${q.join("&")}` : ""}`;
@@ -79,25 +77,23 @@ export class ApiClient {
   private async send(path: string, req: Req): Promise<Response> {
     const withBuild = req.build !== false;
     for (let attempt = 0; ; attempt++) {
-      const res = await this.fetchImpl(this.url(path, req), {
+      const sentBuild = withBuild ? (this.opts.getBuild?.() ?? null) : null; // captured before sending
+      const res = await this.fetchImpl(this.url(path, req, sentBuild), {
         method: req.method ?? "GET",
         signal: req.signal,
         ...(req.body !== undefined
           ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(req.body) }
           : {}),
       });
-      const sentBuild = withBuild && this.opts.getBuild?.() != null;
-      if ((res.status === 409 || (res.status === 404 && sentBuild)) && withBuild && attempt === 0 && this.opts.onRebuilt) {
+      if (res.status === 409 && sentBuild !== null && attempt === 0 && this.opts.onRebuilt) {
         let newBuild: string | null = null;
-        if (res.status === 409) {
-          try {
-            const id = ((await res.json()) as { build_id?: unknown }).build_id;
-            newBuild = typeof id === "string" ? id : null;
-          } catch {
-            /* unreadable body: treat as expired */
-          }
+        try {
+          const id = ((await res.json()) as { build_id?: unknown }).build_id;
+          newBuild = typeof id === "string" ? id : null;
+        } catch {
+          /* unreadable body: treat as expired */
         }
-        await this.opts.onRebuilt(newBuild);
+        await this.opts.onRebuilt(newBuild, sentBuild);
         continue;
       }
       if (!res.ok) throw new ApiError(res.status, await detailOf(res));

@@ -142,18 +142,65 @@ describe("FrameCache extras, failures and clear", () => {
     expect(calls[1].extras).toEqual(["user_1"]);
   });
 
-  it("reports a failed hour once and does not retry it until the window moves or clear()", async () => {
-    const { cache, calls, onError } = setup(30, { radius: 1 });
+  it("retries a failed hour after 3 s, at most 3 attempts per hour, reporting each failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const { cache, calls, onError } = setup(30, { radius: 0 });
+      cache.setCentre(10);
+      const fail = async () => {
+        calls[calls.length - 1].reject(new Error("boom"));
+        await vi.advanceTimersByTimeAsync(0);
+      };
+      await fail();
+      expect(onError).toHaveBeenCalledTimes(1);
+      cache.setCentre(10);
+      await vi.advanceTimersByTimeAsync(2999);
+      expect(calls).toHaveLength(1); // still waiting
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls).toHaveLength(2);
+      await fail();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(calls).toHaveLength(3);
+      await fail();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(calls).toHaveLength(3); // out of attempts
+      expect(onError).toHaveBeenCalledTimes(3);
+      cache.clear();
+      cache.refresh();
+      expect(calls).toHaveLength(4); // clear() starts a fresh count
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a retry that succeeds caches the frame", async () => {
+    vi.useFakeTimers();
+    try {
+      const { cache, calls } = setup(30, { radius: 0 });
+      cache.setCentre(10);
+      calls[0].reject(new Error("x"));
+      await vi.advanceTimersByTimeAsync(3000);
+      calls[1].resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cache.get(10)).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("isStale is true for a frame lacking an enabled tag until the refetch lands", async () => {
+    const { cache, drain } = setup(30, { radius: 1 });
     cache.setCentre(10);
-    calls.find((c) => c.hour === 10)!.reject(new Error("boom"));
-    await flush();
-    expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError.mock.calls[0][0]).toBe(10);
-    cache.setCentre(10);
-    expect(calls.filter((c) => c.hour === 10)).toHaveLength(1);
-    cache.clear();
-    cache.refresh();
-    expect(calls.filter((c) => c.hour === 10)).toHaveLength(2);
+    await drain();
+    expect(cache.isStale(10)).toBe(false);
+    expect(cache.isStale(99)).toBe(false); // not cached: nothing to be stale
+    cache.setExtras(["user_1"]);
+    expect(cache.isStale(10)).toBe(true);
+    expect(cache.get(10)).toBeDefined(); // may be shown meanwhile
+    await drain();
+    expect(cache.isStale(10)).toBe(false);
+    cache.setExtras([]); // carrying an extra tag is not stale
+    expect(cache.isStale(10)).toBe(false);
   });
 
   it("does not report aborts as errors", async () => {

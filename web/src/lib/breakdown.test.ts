@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import fixture from "./__fixtures__/breakdown-cases.json";
-import { arrival, breakdown, type BreakdownRow } from "./breakdown";
+import { arrival, breakdown, breakdownIncomplete, type BreakdownRow } from "./breakdown";
 import { FIRE_STATES, REGIONS, SECTORS, TAGS } from "./tags";
 
 type Json = number | string | null | boolean | Json[] | { [k: string]: Json };
 const revive = (x: Json): Json =>
   x === "NaN" ? NaN : Array.isArray(x) ? x.map(revive) : x && typeof x === "object" ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, revive(v)])) : x;
-const close = (a: number, b: number) => Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+// The port does the same double operations in the same order, so numbers must be identical.
+const same = (a: number, b: number) => Object.is(a, b) || (a === b); // 0 and -0 count as equal
 
 describe("tag catalogue", () => {
   it("matches vayu.domain.TAGS", () => {
@@ -39,9 +40,9 @@ describe("breakdown against the Python reference", () => {
       got.forEach((r, i) => {
         const w = want[i];
         expect([r.key, r.label, r.kind, r.sector, r.minor, r.color]).toEqual([w.key, w.label, w.kind, w.sector, w.minor, w.color]);
-        expect(close(r.value, w.value)).toBe(true);
+        expect(same(r.value, w.value)).toBe(true);
         if (w.share === null) expect(r.share).toBeNull();
-        else expect(close(r.share!, w.share)).toBe(true);
+        else expect(same(r.share!, w.share)).toBe(true);
       });
     });
   }
@@ -93,4 +94,15 @@ describe("arrival against the Python reference", () => {
       else expect(run()).toEqual(c.expected);
     });
   }
+});
+
+describe("breakdownIncomplete", () => {
+  it("is true when a tag with non-zero weight is missing", () => {
+    expect(breakdownIncomplete({ vehicles_delhi_ncr: 5, fire_punjab: null }, {})).toBe(true);
+    expect(breakdownIncomplete({ vehicles_delhi_ncr: NaN }, { vehicles_delhi_ncr: 2 })).toBe(true);
+  });
+  it("ignores missing tags whose weight is 0 and complete data", () => {
+    expect(breakdownIncomplete({ vehicles_delhi_ncr: 5, fire_punjab: null }, { fire_punjab: 0 })).toBe(false);
+    expect(breakdownIncomplete({ vehicles_delhi_ncr: 5 }, {})).toBe(false);
+  });
 });

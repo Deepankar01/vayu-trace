@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Meta, RunStatus } from "../api/types";
 import { frameBytes } from "../test-utils/frames";
 import { makeMeta } from "../test-utils/meta";
-import { createAppStore, REFRESH_NOTICE, RUN_LOST } from "./store";
+import { createAppStore, REBUILD_LOOP, REFRESH_NOTICE, RUN_LOST } from "./store";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -127,7 +127,7 @@ describe("startRun and polling", () => {
     h.get().startRun("2026-11-10").catch(() => {});
     await flush();
     await vi.advanceTimersByTimeAsync(3000);
-    expect(polls - first).toBeLessThanOrEqual(4); // one poll chain, not two
+    expect(polls - first).toBe(4); // polls at t=0,1,2,3 s of ONE chain (the old chain was cancelled)
   });
 });
 
@@ -438,4 +438,179 @@ it("restores user sources listed in meta, enabled", async () => {
   const h = harness(readyServer(() => meta));
   await h.get().startRun("2026-11-10");
   expect(h.get().userSources).toEqual([{ id: "user_1", label: "Old", color: "#999", enabled: true, spec: null }]);
+});
+
+const R2 = "/api/runs/2026-11-11";
+
+describe("rebuild path", () => {
+  it("starting another date during an expiry rebuild abandons it: the old date never overwrites the new run", async () => {
+    let posts = 0;
+    let oldStatus = 0;
+    let expired = false;
+    const h = harness((u, init, n) => {
+      if (u === "/api/runs") {
+        const date = JSON.parse(String(init!.body)).date as string;
+        if (date === "2026-11-11") return json({ run_id: date, status: "ready" });
+        return ++posts === 1 ? json({ run_id: date, status: "ready" }) : json({ run_id: date }, 202);
+      }
+      if (u === RUN) return (oldStatus++, json(running()));
+      if (u === `${R2}/meta`) return json(makeMeta({ build_id: "b7", date: "2026-11-11" }));
+      if (u.startsWith(`${R2}/fires`)) return json([]);
+      if (u.startsWith(`${R2}/frames/`)) return frame();
+      if (u.startsWith(`${RUN}/frames/`) && !expired) {
+        expired = true;
+        return json({ detail: "run expired", build_id: null }, 409);
+      }
+      return readyServer()(u, init, n);
+    });
+    await h.get().startRun("2026-11-10");
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(h.get().status).toBe("running");
+    expect(oldStatus).toBeGreaterThanOrEqual(2);
+    await h.get().startRun("2026-11-11");
+    const seen = oldStatus;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(h.get().runId).toBe("2026-11-11");
+    expect(h.get().meta?.build_id).toBe("b7");
+    expect(h.get().status).toBe("ready");
+    expect(h.get().notice).toBeNull();
+    expect(oldStatus - seen).toBeLessThanOrEqual(1); // the old poll loop stopped
+  });
+
+  it("ignores a late 409 for a build that has already been superseded and retries with the current one", async () => {
+    let k = 1;
+    let releaseWind!: () => void;
+    let winds = 0;
+    const h = harness(
+      readyServer(() => makeMeta({ build_id: `b${k}` }), (u) => {
+        if (u.includes("/wind/")) {
+          if (++winds === 1) return new Promise((r) => (releaseWind = () => r(json({ detail: "run was rebuilt", build_id: "b2" }, 409))));
+          return json({ step: 1 });
+        }
+        if (u.includes("/frames/") && u.includes("build=b1")) {
+          k = 2;
+          return json({ detail: "run was rebuilt", build_id: "b2" }, 409);
+        }
+        return undefined;
+      }),
+    );
+    await h.get().startRun("2026-11-10");
+    const wind = h.store.client.getWind("2026-11-10", 1); // sent with build b1, held
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.get().meta?.build_id).toBe("b2");
+    const metas = h.calls.filter((c) => c === `GET ${RUN}/meta`).length;
+    releaseWind(); // a late 409 for b1
+    await expect(wind).resolves.toMatchObject({ step: 1 });
+    expect(h.calls.filter((c) => c === `GET ${RUN}/meta`)).toHaveLength(metas); // no second rebuild
+    expect(h.calls.filter((c) => c.includes("/wind/")).pop()).toContain("build=b2");
+  });
+
+  it("stops after 2 consecutive automatic rebuilds with status error and a clear message", async () => {
+    let k = 1;
+    const h = harness(
+      readyServer(() => makeMeta({ build_id: `b${k}` }), (u) => {
+        if (u.includes("/frames/")) {
+          k++;
+          return json({ detail: "run was rebuilt", build_id: `b${k}` }, 409);
+        }
+        return undefined;
+      }),
+    );
+    await h.get().startRun("2026-11-10");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(h.get().status).toBe("error");
+    expect(h.get().error).toBe(REBUILD_LOOP);
+    expect(h.calls.filter((c) => c === `GET ${RUN}/meta`)).toHaveLength(3); // initial + 2 rebuilds
+  });
+
+  it("refetches fires after a rebuild and shows 'running' while rebuilding", async () => {
+    let k = 1;
+    const stages: string[] = [];
+    const h = harness(
+      readyServer(() => makeMeta({ build_id: `b${k}` }), (u) => {
+        if (u.includes("/frames/") && u.includes("build=b1")) {
+          k = 2;
+          stages.push(`${h.get().status}`);
+          return json({ detail: "run was rebuilt", build_id: "b2" }, 409);
+        }
+        return undefined;
+      }),
+    );
+    await h.get().startRun("2026-11-10");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.calls.filter((c) => c.startsWith(`GET ${RUN}/fires`))).toHaveLength(2);
+    expect(h.calls.filter((c) => c.includes("/fires")).pop()).toContain("build=b2");
+    expect(h.get().status).toBe("ready");
+  });
+
+  it("stores a failed rebuild in error", async () => {
+    let k = 1;
+    const h = harness(
+      readyServer(() => makeMeta({ build_id: `b${k}` }), (u) => {
+        if (u.includes("/frames/")) return json({ detail: "run expired", build_id: null }, 409);
+        if (u === "/api/runs") return k++ === 1 ? json({ run_id: "2026-11-10", status: "ready" }) : json({ detail: "boom" }, 500);
+        return undefined;
+      }),
+    );
+    await h.get().startRun("2026-11-10");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(h.get().status).toBe("error");
+    expect(h.get().error).toBe("boom");
+  });
+});
+
+describe("addSource keeps series with nulls; frame errors clear; unknown tags surface", () => {
+  it("keeps a series of zeros and nulls, drops one of exact zeros", async () => {
+    const h = harness(
+      readyServer(() => makeMeta({ hours: 4 }), (u) =>
+        u.startsWith(`${RUN}/sources`)
+          ? json({ tag: { id: "user_1", label: "x", color: "#999" }, by_city: { delhi: [0, null, 0, 0], ludhiana: [0, 0, 0, 0] }, build_id: "b1" })
+          : undefined),
+    );
+    await h.get().startRun("2026-11-10");
+    await h.get().addSource({ kind: "k", lon: 1, lat: 2, amount: 1, start_hour: 0, duration_h: 1 });
+    const cities = h.get().meta!.cities;
+    expect(cities.find((c) => c.id === "delhi")!.by_tag.user_1).toEqual([0, null, 0, 0]);
+    expect(cities.find((c) => c.id === "ludhiana")!.by_tag.user_1).toBeUndefined();
+  });
+
+  it("frameError is set by a failure and cleared when a frame later loads (retry after 3 s)", async () => {
+    let failing = true;
+    const h = harness(readyServer(() => makeMeta(), (u) => (u.includes("/frames/") && failing ? json({ detail: "boom" }, 500) : undefined)));
+    await h.get().startRun("2026-11-10");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.get().frameError).toMatch(/^frame for hour \d+: boom$/);
+    failing = false;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.get().frameError).toBeNull();
+    expect(h.store.frames.get(0)).toBeDefined();
+  });
+
+  it("reports a city series whose tag is not in meta.tags as an error string", async () => {
+    const meta = makeMeta();
+    meta.cities[0].by_tag.mystery_tag = [1];
+    const h = harness(readyServer(() => meta));
+    await h.get().startRun("2026-11-10");
+    expect(h.get().error).toMatch(/mystery_tag/);
+  });
+});
+
+describe("memoised weights selectors", () => {
+  it("returns the same object for the same inputs and a new one when an input changes", async () => {
+    const h = harness(readyServer());
+    await h.get().startRun("2026-11-10");
+    const w = h.get().weights();
+    const b = h.get().baselineWeights();
+    expect(h.get().weights()).toBe(w);
+    h.get().setHour(5);
+    h.get().setLayer("wind", true);
+    h.get().setCompareBaseline(true);
+    expect(h.get().weights()).toBe(w);
+    h.get().setSlider("vehicles", 1.5);
+    const w2 = h.get().weights();
+    expect(w2).not.toBe(w);
+    expect(w2.vehicles_delhi_ncr).toBe(1.5);
+    expect(h.get().weights()).toBe(w2);
+    expect(h.get().baselineWeights()).toBe(b); // sliders do not move the baseline
+  });
 });

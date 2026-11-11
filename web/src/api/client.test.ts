@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { frameBytes } from "../test-utils/frames";
-import { ApiClient, ApiError } from "./client";
+import { ApiClient } from "./client";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -12,7 +12,8 @@ function setup(responses: Response[], build: { id: string | null } = { id: "b1" 
     urls.push(String(url));
     return queue.shift() ?? json({ detail: "no more" }, 500);
   });
-  const onRebuilt = vi.fn(async (b: string | null) => {
+  const onRebuilt = vi.fn(async (b: string | null, _sent: string) => {
+    void _sent;
     build.id = b ?? "fresh";
   });
   const client = new ApiClient({ fetch: fetchMock as unknown as typeof fetch, getBuild: () => build.id, onRebuilt });
@@ -67,27 +68,25 @@ describe("ApiClient errors and 409", () => {
     const { client, urls, onRebuilt } = setup([json({ detail: "run was rebuilt", build_id: "b2" }, 409), json([[1, 2, 3, 4]])]);
     expect(await client.getFires("r")).toEqual([[1, 2, 3, 4]]);
     expect(onRebuilt).toHaveBeenCalledTimes(1);
-    expect(onRebuilt).toHaveBeenCalledWith("b2");
+    expect(onRebuilt).toHaveBeenCalledWith("b2", "b1"); // the build that was sent
     expect(urls).toEqual(["/api/runs/r/fires?build=b1", "/api/runs/r/fires?build=b2"]);
   });
 
   it("on 409 (expired, build_id null) passes null", async () => {
     const { client, onRebuilt } = setup([json({ detail: "run expired", build_id: null }, 409), json([])]);
     await client.getFires("r");
-    expect(onRebuilt).toHaveBeenCalledWith(null);
+    expect(onRebuilt).toHaveBeenCalledWith(null, "b1");
   });
 
-  it("treats a 404 on a request that carried ?build= like an expired run", async () => {
-    const { client, onRebuilt, urls } = setup([json({ detail: "no ready run" }, 404), json([])]);
-    await client.getFires("r");
-    expect(onRebuilt).toHaveBeenCalledWith(null);
-    expect(urls[1]).toBe("/api/runs/r/fires?build=fresh");
+  it("treats 404 as an ordinary error (unknown city, bad hour) with no rebuild", async () => {
+    const { client, onRebuilt } = setup([json({ detail: "unknown city 'x'" }, 404)]);
+    await expect(client.getMeasured("r", "x")).rejects.toMatchObject({ status: 404, message: "unknown city 'x'" });
+    expect(onRebuilt).not.toHaveBeenCalled();
   });
 
-  it("does not treat a 404 as expiry when no build was sent (meta, status, or before meta)", async () => {
-    const a = setup([json({ detail: "no run" }, 404)]);
-    await expect(a.client.getRunStatus("r")).rejects.toMatchObject({ status: 404 });
-    await expect(setup([json({ detail: "x" }, 404)], { id: null }).client.getFires("r")).rejects.toBeInstanceOf(ApiError);
+  it("does not rebuild when no build was sent (409 before meta, or on run/meta calls)", async () => {
+    const a = setup([json({ detail: "x", build_id: "b2" }, 409)], { id: null });
+    await expect(a.client.getFires("r")).rejects.toMatchObject({ status: 409 });
     expect(a.onRebuilt).not.toHaveBeenCalled();
   });
 

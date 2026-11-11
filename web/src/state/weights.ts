@@ -89,3 +89,37 @@ export function isForecastHour(meta: Pick<Meta, "forecast_from"> | null, h: numb
 export function isFireAssumedHour(meta: Pick<Meta, "fires_assumed_from"> | null, h: number): boolean {
   return meta?.fires_assumed_from != null && Math.floor(h) >= meta.fires_assumed_from;
 }
+
+type Deps = readonly unknown[];
+const sameDeps = (a: Deps | null, b: Deps) => a !== null && a.every((x, i) => Object.is(x, b[i]));
+
+/**
+ * Memoised selectors: the same inputs (meta tags/notes, sliders, fire scaling, fires-continue,
+ * Delhi scenarios, user sources) return the SAME object, so `useStore((s) => s.weights())` does
+ * not re-render on unrelated store changes (hour, frames, ...). Callers must treat the result as
+ * read-only. The store creates one pair per store instance.
+ */
+export function createWeightSelectors() {
+  let wDeps: Deps | null = null;
+  let wOut: Weights = {};
+  let bDeps: Deps | null = null;
+  let bOut: Weights = {};
+  return {
+    weights(s: ScenarioState): Weights {
+      const deps = [s.meta?.tags, s.meta?.notes, s.sliders, s.fireScaling, s.firesContinue, s.regionScenario, s.userSources];
+      if (!sameDeps(wDeps, deps)) {
+        wOut = selectWeights(s);
+        wDeps = deps;
+      }
+      return wOut;
+    },
+    baselineWeights(s: Pick<ScenarioState, "meta">): Weights {
+      const deps = [s.meta?.tags, s.meta?.notes];
+      if (!sameDeps(bDeps, deps)) {
+        bOut = selectBaselineWeights(s);
+        bDeps = deps;
+      }
+      return bOut;
+    },
+  };
+}
