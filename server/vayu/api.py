@@ -68,7 +68,7 @@ log = logging.getLogger("vayu.api")
 for _name in ("httpx", "httpcore"):
     logging.getLogger(_name).setLevel(logging.WARNING)
 
-MIN_DATE = date(2018, 4, 1)  # confirmed in Task 16
+MIN_DATE = date(2018, 4, 1)  # two VIIRS satellites from then on (docs/data-notes.md)
 MAX_USER_SOURCES = 5
 BUILD_CACHE = 4  # builds whose RunResult and MetField are kept in memory
 CITY_AREA_KM = 30  # a city value is the mean over the 3x3 cell block (receptors.city_series)

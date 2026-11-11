@@ -28,8 +28,8 @@ TIMEOUT_S = 120  # the service is slow
 VALUE_MAX = 2000.0  # ug/m3; larger or negative readings are not plausible PM2.5
 
 # Spellings the feed may use for our city names (lowercase). Matching is case-insensitive on
-# the feed's `city` field; these cover well-known renamings. Unverified against a live reply
-# (see the task report): the feed was unreachable when this was written.
+# the feed's `city` field; these cover well-known renamings. Unverified against a live reply:
+# the feed was unreachable when this was written.
 ALIASES: dict[str, tuple[str, ...]] = {
     "gurugram": ("gurgaon",),
     "prayagraj": ("allahabad",),

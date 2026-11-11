@@ -9,8 +9,8 @@ Fetches the per-sector 2022 annual NetCDF zips named in vayu.emissions.inventory
 sizes and SHA-256 digests, then builds the cached domain grids and prints India totals.
 """
 import hashlib
-import sys
 import io
+import sys
 import zipfile
 
 import httpx

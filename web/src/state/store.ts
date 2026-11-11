@@ -1,6 +1,6 @@
 /**
  * Application state (zustand): the run lifecycle, playback, scenario controls and per-city
- * side data. No timers for playback live here (a later task drives `tick` from
+ * side data. No timers for playback live here (`useMapAnimation` drives `tick` from
  * requestAnimationFrame); the only timer is the 1 s run-status poll. Failures become strings in
  * `error` (run) / `frameError` / `sourceError` / `firesError` / per-city `error`; nothing is
  * thrown into React.

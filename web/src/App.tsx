@@ -86,7 +86,7 @@ export default function App() {
     <>
       <MapContainer onDropPoint={onDropPoint} onProblem={onProblem} />
       <div className="app-ui">
-        {/* Validation report (Task 16): their component, placed at the right end of the top bar */}
+        {/* Validation report, at the right end of the top bar */}
         <PanelBoundary name="Top bar" resetKey={build}><TopBar date={requested} onDate={startRun} actions={<ValidationButton />} /></PanelBoundary>
         {ready && (
           <>

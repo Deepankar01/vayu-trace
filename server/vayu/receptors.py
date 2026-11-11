@@ -4,15 +4,23 @@ from" breakdown, smoke arrival and a wind back-trajectory.
 `breakdown` is the reference implementation that the TypeScript port must reproduce exactly, so it
 is pure (no I/O, no rounding) and deliberately simple.
 """
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, Mapping, TypedDict
+from typing import Literal, TypedDict
 
 import numpy as np
 
 from vayu.cities import CITIES, City
 from vayu.constants import DT_S, EARTH_RADIUS_M, FIRE_ARRIVAL_UGM3
 from vayu.domain import (
-    FIRE_STATES, NX, NY, REGIONS, TAGS, cell_index, inside, region_mask,
+    FIRE_STATES,
+    NX,
+    NY,
+    REGIONS,
+    TAGS,
+    cell_index,
+    inside,
+    region_mask,
 )
 from vayu.met import MetField
 
@@ -80,7 +88,7 @@ def wind_dir_from_deg(u, v):
     return np.where(np.hypot(u, v) < CALM_MS, np.nan, d)
 
 
-def _blocks(cities) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _blocks(cities) -> tuple[np.ndarray, np.ndarray]:
     """Flat cell index (ncity, 9) of each city's 3x3 block, and a validity mask (ncity, 9).
     Cells outside the domain are invalid (index 0 as a placeholder)."""
     ix, iy = cell_index([c.lon for c in cities], [c.lat for c in cities])

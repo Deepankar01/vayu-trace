@@ -17,7 +17,7 @@ LAT = np.arange(6.0, 38.1, 1.0)
 
 def make_met(hours=100, speed=0.0, direction=270.0, blh=500.0):
     shape = (hours, 33, 33)
-    f = lambda x: np.full(shape, x, dtype=np.float32)  # noqa: E731
+    f = lambda x: np.full(shape, x, dtype=np.float32)
     return MetField(MetRaw(START, hours, LON, LAT, {
         "wind_speed_10m": f(speed), "wind_direction_10m": f(direction),
         "wind_speed_100m": f(speed), "wind_direction_100m": f(direction),
@@ -30,7 +30,7 @@ def make_met_series(speeds, direction=270.0, blh=500.0):
     """Met whose wind speed at hour index i is speeds[i] everywhere."""
     hours = len(speeds)
     shape = (hours, 33, 33)
-    f = lambda x: np.full(shape, x, dtype=np.float32)  # noqa: E731
+    f = lambda x: np.full(shape, x, dtype=np.float32)
     sp = np.broadcast_to(np.asarray(speeds, dtype=np.float32)[:, None, None], shape).copy()
     return MetField(MetRaw(START, hours, LON, LAT, {
         "wind_speed_10m": sp, "wind_direction_10m": f(direction),
