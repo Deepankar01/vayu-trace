@@ -1,4 +1,4 @@
-"""Record upstream responses as test fixtures. Usage: record_fixtures.py firms|openmeteo
+"""Record upstream responses as test fixtures. Usage: record_fixtures.py firms|openmeteo|terrain
 
 The API key is read from the environment/.env and never written to disk.
 """
@@ -59,10 +59,27 @@ def record_openmeteo() -> None:
         print(f"saved {name} ({len(resp.content)} bytes)")
 
 
+def record_terrain() -> None:
+    """The zoom-6 Terrarium tiles under Delhi, the Himalaya (79E 31N) and the Arabian Sea (68E 12N)."""
+    from vayu import terrain
+
+    out = FIXTURES / "terrain"
+    out.mkdir(parents=True, exist_ok=True)
+    points = [(77.2, 28.6), (79.0, 31.0), (68.0, 12.0)]
+    wanted = {(terrain._tile_x(lon), terrain._tile_y(lat)) for lon, lat in points}
+    with httpx.Client(timeout=60) as client:
+        for x, y in sorted(wanted):
+            body = terrain._fetch_tile(client, x, y)
+            (out / f"{terrain.ZOOM}_{x}_{y}.png").write_bytes(body)
+            print(f"saved {terrain.ZOOM}_{x}_{y}.png ({len(body)} bytes)")
+
+
 if __name__ == "__main__":
     if sys.argv[1:] == ["firms"]:
         record_firms()
     elif sys.argv[1:] == ["openmeteo"]:
         record_openmeteo()
+    elif sys.argv[1:] == ["terrain"]:
+        record_terrain()
     else:
-        raise SystemExit("usage: record_fixtures.py firms|openmeteo")
+        raise SystemExit("usage: record_fixtures.py firms|openmeteo|terrain")

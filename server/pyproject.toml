@@ -3,7 +3,7 @@ name = "vayu"
 version = "0.1.0"
 description = "India air-pollution transport simulator server"
 requires-python = ">=3.12"
-dependencies = ["numpy", "shapely", "httpx"]
+dependencies = ["numpy", "shapely", "httpx", "pillow"]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "respx", "ruff"]
