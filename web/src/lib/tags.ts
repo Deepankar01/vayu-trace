@@ -40,7 +40,7 @@ export const FIRE_STATE_NAMES: Record<string, string> = {
   haryana: "Haryana",
   uttar_pradesh: "Uttar Pradesh",
   madhya_pradesh: "Madhya Pradesh",
-  other: "other states",
+  other: "other states and neighbouring countries",
 };
 
 export const FIRE_LABEL = "Fires (satellite)";

@@ -29,7 +29,7 @@ _REGION_NAMES = {
 }
 _FIRE_STATE_NAMES = {
     "punjab": "Punjab", "haryana": "Haryana", "uttar_pradesh": "Uttar Pradesh",
-    "madhya_pradesh": "Madhya Pradesh", "other": "other states",
+    "madhya_pradesh": "Madhya Pradesh", "other": "other states and neighbouring countries",
 }
 assert set(_REGION_NAMES) == set(REGIONS) and set(_FIRE_STATE_NAMES) == set(FIRE_STATES)
 

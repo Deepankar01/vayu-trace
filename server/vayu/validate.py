@@ -383,7 +383,9 @@ def render_markdown(report: dict) -> str:
         "## Method",
         "",
         ("- **Simulated**: hour-mean dry PM2.5 that the model attributes to directly emitted "
-        "sources (EDGAR v8.1 sectors in India, satellite fires), the value the app shows for a "
+        "sources (EDGAR v8.1 sectors in India; satellite-detected fires anywhere in the model "
+        "domain, 66-98°E, 6-38°N, including Pakistan, Nepal and Bangladesh), the value the app "
+        "shows for a "
         "city: the mean over the 3 x 3 block of 0.1 degree cells around it (about 30 km), summed "
         "over all source tags at default weights (every weight 1, fire scaling 1, fires "
         "continue). An hour is missing if any tag is missing there."),
@@ -412,7 +414,11 @@ def render_markdown(report: dict) -> str:
         "block start + 2 days); a shorter final block comes from the run whose window ends on the "
         "episode's last day. Each run includes 48 hours of spin-up before its window."),
         ("- **Not simulated**: secondary aerosol (nitrate, sulphate, secondary organics), "
-        "inflow from outside India (including Pakistani Punjab), road and construction dust "
+        "anthropogenic inventory emissions outside India (vehicles, industry, residential, for "
+        "example in Pakistani Punjab; fires there ARE simulated and appear under \"other states "
+        "and neighbouring countries\", with the generic vegetation emission factor, not the "
+        "crop-residue one, a known approximation for crop-residue fires in Pakistani Punjab), "
+        "road and construction dust "
         "(no gridded inventory), vertical structure (one mixed layer), chemistry; emissions are "
         "annual means with no daily or seasonal cycle. Low readings are expected from these "
         "omissions. Possible causes of other errors include errors in transport, mixing height "

@@ -66,7 +66,7 @@ def test_labels():
     assert rows["local:residential"].label == "Local residential"
     assert rows["transported:dust:rest_of_india"].label.endswith("— Rest of India")
     assert rows["fire:madhya_pradesh"].label == "Fires (satellite) — Madhya Pradesh"
-    assert rows["fire:other"].label == "Fires (satellite) — other states"
+    assert rows["fire:other"].label == "Fires (satellite) — other states and neighbouring countries"
     assert (rows["user:user_1"].label, rows["user:user_1"].kind) == ("My plant", "user")
     assert breakdown({"user_2": 1.0}, {}, "delhi_ncr", None)[0].label == "Added source"
 

@@ -53,7 +53,7 @@ Every physical constant is in `server/vayu/constants.py` with a comment citing i
 ## What the model does NOT do
 
 - **Secondary aerosol.** Nitrate, sulphate and secondary organic aerosol formed in the air are not simulated. In a north-Indian winter they are a large part of measured PM2.5, so simulated values are expected to read low.
-- **Inflow from outside India.** Emissions outside India are dropped, including Pakistani Punjab (upwind of Delhi in winter), Nepal and Bangladesh. Transport from them is not simulated.
+- **Inflow from outside India (partly).** Satellite-detected fires anywhere in the map domain (66–98°E, 6–38°N), including Pakistan, Nepal and Bangladesh, ARE simulated and appear under "Fires (satellite) — other states and neighbouring countries". Anthropogenic inventory emissions (vehicles, industry, residential) outside India are NOT simulated, including Pakistani Punjab (upwind of Delhi in winter), Nepal and Bangladesh. Fires in the "other" group use the generic vegetation emission factor, not the crop-residue factor; for crop-residue fires in Pakistani Punjab this is a known approximation.
 - **Vertical structure and chemistry.** One well-mixed layer only; no chemistry.
 - **Dust baseline.** No usable gridded road and construction dust inventory was available, so its baseline is zero; dust enters only through dropped sources. About 30 % of the vehicles sector is resuspended road dust as reported by EDGAR.
 - **Fire under-detection.** Satellites miss small and short-lived fires and fires under cloud or smoke; the fire scaling slider (default 1, no correction) is there for this.

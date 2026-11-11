@@ -446,7 +446,7 @@
      },
      {
       "key": "fire:other",
-      "label": "Fires (satellite) — other states",
+      "label": "Fires (satellite) — other states and neighbouring countries",
       "kind": "fire",
       "sector": null,
       "value": 10.0,
@@ -745,7 +745,7 @@
      },
      {
       "key": "fire:other",
-      "label": "Fires (satellite) — other states",
+      "label": "Fires (satellite) — other states and neighbouring countries",
       "kind": "fire",
       "sector": null,
       "value": 1.0,
@@ -950,7 +950,7 @@
      },
      {
       "key": "fire:other",
-      "label": "Fires (satellite) — other states",
+      "label": "Fires (satellite) — other states and neighbouring countries",
       "kind": "fire",
       "sector": null,
       "value": 91.93514416311388,
@@ -1274,7 +1274,7 @@
      },
      {
       "key": "fire:other",
-      "label": "Fires (satellite) — other states",
+      "label": "Fires (satellite) — other states and neighbouring countries",
       "kind": "fire",
       "sector": null,
       "value": 102.23877999999999,
@@ -1594,7 +1594,7 @@
      },
      {
       "key": "fire:other",
-      "label": "Fires (satellite) — other states",
+      "label": "Fires (satellite) — other states and neighbouring countries",
       "kind": "fire",
       "sector": null,
       "value": 47.809,
@@ -1924,7 +1924,7 @@
      },
      {
       "key": "fire:other",
-      "label": "Fires (satellite) — other states",
+      "label": "Fires (satellite) — other states and neighbouring countries",
       "kind": "fire",
       "sector": null,
       "value": 60.0,

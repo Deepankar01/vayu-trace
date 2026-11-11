@@ -227,3 +227,18 @@ def test_rejects_naive_or_unaligned_start():
         fires.fire_emissions(datetime(2025, 11, 1), 1, LATER)
     with pytest.raises(ValueError):
         fires.fire_emissions(START + timedelta(minutes=30), 1, LATER)
+
+
+def test_fire_outside_india_inside_domain_is_emitted_as_other(monkeypatch):
+    """Cross-border fires (here Pakistani Punjab, near Kasur) are simulated: tagged `fire_other`
+    with the generic vegetation factor. Detections outside the domain box are dropped."""
+    kasur = (74.45, 31.12)
+    outside_domain = (62.0, 30.0)
+    rows = [(*kasur, 10.0, "09:00", True, "VIIRS_SNPP"),
+            (*outside_domain, 10.0, "09:00", True, "VIIRS_SNPP")]
+    patch(monkeypatch, {DAY: det(rows)})
+    em = fires.fire_emissions(START, 24, LATER)
+    assert em.tags == ["fire_other"]
+    assert total(em, "fire_other", 24) == pytest.approx(SPREAD * C.EF_PM25_VEG_G_PER_KG, rel=0.01)
+    ix, iy = cell_index(np.array([kasur[0]]), np.array([kasur[1]]))
+    assert set(at(em, "fire_other", 9)) == {(int(iy[0]), int(ix[0]))}

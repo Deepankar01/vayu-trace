@@ -57,7 +57,7 @@ Baseline non-fire PM2.5 as constant (NY, NX) grids in kg per hour, one per `{sec
 | `residential` | EDGAR RCO |
 | `dust` | none: zeros, `dust_available = False` |
 
-Regions come from `region_mask()`. `region_mask()` labels every cell outside the states (sea, Pakistan, Nepal, China...) as `rest_of_india`, so the loader also applies `india_mask()` (cell centre inside any state or union-territory polygon of the official outline) and drops cells outside India. Because that test uses cell centres on a 0.1 degree grid with a simplified outline, coastal cells that are mostly land but centred offshore are dropped. The loss is not spatially uniform. Measured on the summed sector grids within 0.5 degree of each city, the share kept is: Delhi 100 %, Kolkata 100 %, Mumbai 99.4 %, Chennai 84 %; the national shortfall against EDGAR's country totals (about 1-3 %) comes from such edge cells. Emissions outside India are dropped by design: for example only 5 % of the emission within 0.5 degree of Lahore is kept (the part on the Indian side of the boundary), so Pakistani Punjab, which is upwind of Delhi in winter, contributes nothing, and neither do Nepal, Bangladesh or Chinese sources. Transport from them is not simulated.
+Regions come from `region_mask()`. `region_mask()` labels every cell outside the states (sea, Pakistan, Nepal, China...) as `rest_of_india`, so the loader also applies `india_mask()` (cell centre inside any state or union-territory polygon of the official outline) and drops cells outside India. Because that test uses cell centres on a 0.1 degree grid with a simplified outline, coastal cells that are mostly land but centred offshore are dropped. The loss is not spatially uniform. Measured on the summed sector grids within 0.5 degree of each city, the share kept is: Delhi 100 %, Kolkata 100 %, Mumbai 99.4 %, Chennai 84 %; the national shortfall against EDGAR's country totals (about 1-3 %) comes from such edge cells. Inventory (anthropogenic) emissions outside India are dropped by design: for example only 5 % of the inventory emission within 0.5 degree of Lahore is kept (the part on the Indian side of the boundary), so vehicles, industry and residential sources in Pakistani Punjab, which is upwind of Delhi in winter, contribute nothing, and neither do those in Nepal, Bangladesh or China. This applies to the inventory only: satellite-detected fires anywhere in the domain, including Pakistan, Nepal and Bangladesh, are simulated (see Fires below).
 
 ### Sanity checks
 Loader versus EDGAR's own India country totals (2022, kt/yr, sum of the IPCC lines of the spreadsheet vs the gridded loader restricted to `india_mask()`):
@@ -84,7 +84,7 @@ India-total PM2.5 by sector from `inventory_emissions()` (kt/yr = kg/h x 8760 / 
 | dust | 0 | 0 | 0 | 0 | 0 | 0 | 0 (not available) |
 | residential | 43.5 | 38.9 | 28.7 | 268.4 | 150.3 | 1125.0 | 1654.8 |
 
-Share of each sector's domain-wide EDGAR total dropped for lying outside India: vehicles 21.6 %, industry 14.1 %, residential 37.4 % (neighbouring countries and sea). These sit in the 66-98 E, 6-38 N domain and are not emitted; transport from them into India is therefore not modelled.
+Share of each sector's domain-wide EDGAR total dropped for lying outside India: vehicles 21.6 %, industry 14.1 %, residential 37.4 % (neighbouring countries and sea). These sit in the 66-98 E, 6-38 N domain and are not emitted; transport of inventory emissions from them into India is therefore not modelled (fires there are; see Fires below).
 
 ### Excluded EDGAR PM2.5 sectors
 EDGAR v8.1 publishes PM2.5 gridmaps for 23 sector codes; the nine above are used. India 2022 kt/yr comes from EDGAR's country table (`EDGAR_PM25_1970_2022.zip`, IPCC 2006 lines, both fuel-type blocks summed); "n/a" means the table has no line that maps cleanly onto the code.
@@ -112,6 +112,13 @@ EDGAR's country table splits road transport (1A3b, inside TRO) into `1.A.3.b_noR
 - Road transport in EDGAR is small (57 kt/yr) next to industry and residential; with no dust sector, the model will under-represent coarse-ish road and construction dust, which the Indian inventory above finds dominant for PM10. Industry now includes process PM2.5 (cement, steel and similar), but not open waste burning or small unorganised industry that EDGAR omits. Do not read the absence of dust as a small dust source.
 - EDGAR 0.1 degree allocation uses global proxy data; city-scale placement is approximate.
 - One annual mean rate for every hour: no diurnal, weekly or seasonal variation (e.g. winter heating or burning).
+
+## Fires (`server/vayu/emissions/fires.py`, `server/vayu/clients/firms.py`)
+
+- **Where.** Every VIIRS detection inside the model domain box (66-98 E, 6-38 N) is emitted, whether or not it lies in India: fires in Pakistan (including Pakistani Punjab), Nepal and Bangladesh are simulated. Cells in Punjab, Haryana, Uttar Pradesh and Madhya Pradesh are tagged by state; every other cell, inside or outside India, is tagged `other` and shown as "Fires (satellite) — other states and neighbouring countries". A test pins this (`test_fire_outside_india_inside_domain_is_emitted_as_other`). Detections outside the domain box are dropped.
+- **Emission factor.** The four named states use the crop-residue factor (`EF_PM25_CROP_G_PER_KG`); the `other` group uses the generic vegetation factor (`EF_PM25_VEG_G_PER_KG`). For crop-residue fires in Pakistani Punjab this is a known approximation.
+- **"Yesterday" counts as complete.** Hours in UTC days before the run's day are taken from that day's detections. Near-real-time detections for yesterday can still be arriving when a run is made, so runs for today can be slightly low on fires (yesterday's observed hours, and the persistence basis that includes yesterday).
+- **Forecast persistence.** From 00:00 UTC of the run's day on, fires are assumed: each cell's daily emission is the plain (unweighted) mean of the last three complete UTC days, spread over the hours by the same diurnal profile.
 
 ## Simulation run timing (`server/vayu/sim/run.py`)
 
