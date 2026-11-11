@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { NO_FIT, NO_REPORT, ValidationButton, ValidationDialog, type ValidationReport, type ValidationRow } from "./ValidationDialog";
+import { NO_FIT, NO_REPORT, STALE_REPORT, ValidationButton, ValidationDialog, type ValidationReport, type ValidationRow } from "./ValidationDialog";
 
 const split = (day: number | null, night: number | null) => ({
   day: { n: 56, bias: day, nmb: null }, night: { n: 56, bias: night, nmb: null },
@@ -51,6 +51,17 @@ describe("ValidationDialog", () => {
     const prov = screen.getByTestId("vd-provenance").textContent!;
     expect(prov).toContain("generated 2026-11-11T09:30:00+00:00");
     expect(prov).toContain("2025-11-05 (20261111T083034Z-87c28ccb)");
+  });
+
+  it("says the report is stale when the server marks it so, and nothing otherwise", async () => {
+    const f = vi.fn(async () => json({ ...REPORT, stale: true }));
+    const { unmount } = render(<ValidationDialog onClose={() => {}} fetchImpl={f as unknown as typeof fetch} />);
+    expect(await screen.findByText(STALE_REPORT)).toBeInTheDocument();
+    unmount();
+    const g = vi.fn(async () => json({ ...REPORT, stale: false }));
+    render(<ValidationDialog onClose={() => {}} fetchImpl={g as unknown as typeof fetch} />);
+    await screen.findByTestId("vd-provenance");
+    expect(screen.queryByTestId("vd-stale")).toBeNull();
   });
 
   it("renders a report without r_per_city, runs or generated_at (older shape)", async () => {

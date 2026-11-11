@@ -54,7 +54,7 @@ describe("CityPanel", () => {
   it("always states what the model simulates and how it compared in validation", () => {
     setup(sim100, null);
     expect(screen.getByText(
-      "The model simulates directly emitted PM2.5 only. Secondary aerosol and inflow from outside India are not simulated. " +
+      "The model simulates directly emitted PM2.5 only. Secondary aerosol and non-fire emissions outside India are not simulated (fires there are). " +
       "In the November 2025 validation it read low on average, though individual hours can read high. See Validation.",
     )).toBeInTheDocument();
   });

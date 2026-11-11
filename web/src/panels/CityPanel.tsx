@@ -16,7 +16,7 @@ import { useApp, useAppStore } from "./storeContext";
 import { Dot, HourTag, cityOf } from "./ui";
 
 export const MODEL_SCOPE_NOTE =
-  "The model simulates directly emitted PM2.5 only. Secondary aerosol and inflow from outside India are not simulated. " +
+  "The model simulates directly emitted PM2.5 only. Secondary aerosol and non-fire emissions outside India are not simulated (fires there are). " +
   "In the November 2025 validation it read low on average, though individual hours can read high. See Validation.";
 
 export function CityPanel() {

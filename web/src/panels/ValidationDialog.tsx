@@ -8,6 +8,7 @@ import "./ValidationDialog.css";
 
 export const NO_FIT = "No parameter was fitted to these measurements.";
 export const NO_REPORT = "No validation report yet. Run `make validate`.";
+export const STALE_REPORT = "This report was generated with different model settings; run `make validate` to refresh.";
 
 export interface Metrics {
   n: number;
@@ -56,6 +57,8 @@ export interface ValidationReport {
   runs?: RunRef[];
   cities: ValidationRow[];
   pooled: ValidationRow[];
+  /** Set by the server: the report's constants hash differs from the current model settings. */
+  stale?: boolean;
 }
 
 const DASH = "–";
@@ -191,10 +194,11 @@ export function ValidationDialog({ onClose, fetchImpl }: { onClose: () => void; 
         {load.state === "error" && <p className="vd-error">Could not load the validation report: {load.message}</p>}
         {load.state === "ready" && (
           <>
+            {load.report.stale && <p className="vd-error" data-testid="vd-stale">{STALE_REPORT}</p>}
             <p className="vd-episode">
               Episode <b className="num">{load.report.episode.start.slice(0, 10)}</b> to{" "}
               <b className="num">{load.report.episode.end.slice(0, 10)}</b> (UTC hours), default weights. Directly
-              emitted PM2.5 only: secondary aerosol and inflow from outside India are not simulated. NMB = Σ(model −
+              emitted PM2.5 only: secondary aerosol and non-fire emissions outside India are not simulated (fires there are). NMB = Σ(model −
               measured) / Σ measured; FAC2 = share of hours within a factor of two; bias in µg/m³, day 10:00–17:59 IST,
               night 22:00–05:59 IST. “{DASH}” means fewer than {load.report.min_n} paired hours.
             </p>
