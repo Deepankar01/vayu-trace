@@ -616,6 +616,23 @@ def test_wind_shape_and_nulls(env):
     assert ready(env).get("/api/runs/2023-11-05/wind/3").status_code == 404
 
 
+def test_wind_is_sampled_mid_hour_like_frames(env, monkeypatch):
+    """Frames are hour means, so the wind for hour h is the met at h + 0.5 (after spin-up)."""
+    def ramp(start, hours, now):
+        raw = fake_raw(start, hours)
+        speed = np.broadcast_to(np.arange(hours, dtype=np.float32)[:, None, None],
+                                raw.variables["wind_speed_10m"].shape).copy()
+        raw.variables.update(wind_speed_10m=speed, wind_speed_100m=speed.copy())
+        return raw
+
+    monkeypatch.setattr(api, "fetch_met", ramp)
+    c = ready(env)
+    for h in (0, 2):
+        w = c.get(f"/api/runs/2023-11-05/wind/{h}").json()
+        assert w["u"][0] == pytest.approx(SPINUP + h + 0.5, abs=1e-3)  # westerly: u = speed
+        assert w["v"][500] == pytest.approx(0.0, abs=1e-3)
+
+
 def test_path_starts_at_city_and_goes_upwind(env):
     p = ready(env).get("/api/runs/2023-11-05/cities/delhi/path/2").json()
     assert p[0] == [round(BY_ID["delhi"].lon, 3), round(BY_ID["delhi"].lat, 3)]

@@ -732,10 +732,11 @@ def get_fires(run_id: str, build: str | None = None):
 def get_wind(run_id: str, hour: int, build: str | None = None):
     b = _resolve(run_id, build)
     _check_hour(b.run, hour)
-    g = b.met().grid(b.met_offset_h + hour)
     lon, lat = lattice()
+    # frames are hour means: sample mid-hour, like city met (`sample` clamps to the met range)
+    s = b.met().sample(*np.meshgrid(lon, lat), b.met_offset_h + hour + 0.5)
     return _json({"step": MET_STEP_DEG, "lon0": lon[0], "lat0": lat[0], "nx": NLON, "ny": NLAT,
-                  "u": np.round(g["u"].ravel(), 2), "v": np.round(g["v"].ravel(), 2)})
+                  "u": np.round(s.u.ravel(), 2), "v": np.round(s.v.ravel(), 2)})
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/path/{hour}")
