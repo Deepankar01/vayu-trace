@@ -8,10 +8,13 @@ import { DASH, fmtISTShort } from "../lib/format";
 import { SPEEDS } from "../state/store";
 import { istDayStarts } from "./chartScale";
 import { useApp, useAppStore } from "./storeContext";
+import { HourTag } from "./ui";
 
 export const CAPTION_CONTINUE = "forecast assumes fires continue at recent levels";
 export const CAPTION_STOP = "forecast assumes fires stop now";
 export const SOLID_LEGEND = "solid = past hours (observed weather and fires)";
+/** When fires are assumed before the forecast starts, solid hours are not all observed fires. */
+export const SOLID_LEGEND_ASSUMED = "solid = past hours (observed weather; fires observed until the marker)";
 export const DASHED_LEGEND = "dashed = forecast";
 
 export function Timeline() {
@@ -46,7 +49,7 @@ export function Timeline() {
         )}
       </button>
       <div className="time-block">
-        <div className="clock-big num" data-testid="clock">{meta ? fmtISTShort(meta.hours[h]) : DASH}</div>
+        <div className="clock-big num" data-testid="clock">{meta ? fmtISTShort(meta.hours[h]) : DASH} <HourTag /></div>
         <div className="mute small">
           {loadingHour !== null ? <span className="loading">loading hour {loadingHour}…</span> : `IST · 1 h steps · ${speed}× speed`}
         </div>
@@ -80,7 +83,7 @@ export function Timeline() {
       </div>
 
       <div className="right-block">
-        {meta && <div className="caption-line mute">{SOLID_LEGEND}</div>}
+        {meta && <div className="caption-line mute">{showFa ? SOLID_LEGEND_ASSUMED : SOLID_LEGEND}</div>}
         {ff !== null && <div className="caption-line mute">{DASHED_LEGEND}</div>}
         {caption && <div className="caption-line accent">{caption}</div>}
       </div>

@@ -13,7 +13,7 @@ import { IDLE_CITY_DATA } from "../state/store";
 import { measuredAt, noMeasuredInWindow, cityView } from "./cityView";
 import { ModelChart } from "./ModelChart";
 import { useApp, useAppStore } from "./storeContext";
-import { Dot, cityOf } from "./ui";
+import { Dot, HourTag, cityOf } from "./ui";
 
 export const MODEL_SCOPE_NOTE =
   "The model simulates directly emitted PM2.5 only. Secondary aerosol and inflow from outside India are not simulated. " +
@@ -119,16 +119,20 @@ export function CityPanel() {
 
       <div className="aqi-row">
         <div className="sim-col">
-          <div className={simAqi === null ? "big num mute" : "big num"} data-testid="sim-aqi">
-            {simAqi === null ? DASH : simAqi}
+          <div className="sim-aqi-line">
+            <div className={simAqi === null ? "big num mute" : "big num"} data-testid="sim-aqi">
+              {simAqi === null ? DASH : simAqi}
+            </div>
+            <HourTag />
           </div>
           {simAqi === null ? (
             <div className="sev mute">needs 16 h of data</div>
           ) : (
-            <div className="sev num" style={{ color: aqiColor(simAqi) }}>
-              {aqiCategory(simAqi)} · PM2.5 {fmtNumber(view.simHourly)} µg/m³
+            <div className="sev num" data-testid="sim-category" style={{ color: aqiColor(simAqi) }}>
+              {aqiCategory(simAqi)} · PM2.5 {fmtNumber(view.simMean)} µg/m³ (24 h mean)
             </div>
           )}
+          <div className="caption num" data-testid="sim-hourly">this hour: {fmtNumber(view.simHourly)} µg/m³</div>
         </div>
         <div className="measured" aria-label="Measured">
           <div className="mute">measured (CPCB)</div>
@@ -142,7 +146,7 @@ export function CityPanel() {
       <p className="explain">{MODEL_SCOPE_NOTE}</p>
 
       <div className="sep" />
-      <h4 data-testid="breakdown-title">Where it came from · <span className="nocase">{hourLabel} (this hour)</span></h4>
+      <h4 data-testid="breakdown-title">Where it came from · <span className="nocase">{hourLabel} (this hour)</span> <HourTag /></h4>
       {view.problem ? (
         <p className="note warn">{view.problem}</p>
       ) : (

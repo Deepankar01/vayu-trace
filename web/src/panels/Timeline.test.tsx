@@ -24,6 +24,20 @@ describe("Timeline", () => {
     renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
     expect(screen.getByText("dashed = forecast")).toBeInTheDocument();
   });
+  it("solid legend says fires are observed only until the marker when assumed hours precede the forecast", () => {
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
+    expect(screen.getByText("solid = past hours (observed weather; fires observed until the marker)")).toBeInTheDocument();
+    expect(screen.queryByText("solid = past hours (observed weather and fires)")).toBeNull();
+  });
+  it("tags the big clock 'fires assumed' or 'forecast' at the playhead hour", () => {
+    const meta = makeMeta({ fires_assumed_from: 20, forecast_from: 24 });
+    const { unmount } = renderPanel(<Timeline />, { meta, hour: 10 });
+    expect(screen.queryByTestId("hour-tag")).toBeNull();
+    unmount();
+    renderPanel(<Timeline />, { meta, hour: 21 });
+    expect(screen.getByTestId("clock")).toContainElement(screen.getByTestId("hour-tag"));
+    expect(screen.getByTestId("hour-tag").textContent).toBe("fires assumed");
+  });
   it("caption whenever fires are assumed (continue by default)", () => {
     renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
     expect(screen.getByText(CONTINUE)).toBeInTheDocument();

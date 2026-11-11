@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Layers } from "../state/store";
 import { DASH, compass16, fmtIST } from "../lib/format";
 import { useApp, useAppStore } from "./storeContext";
-import { cityOf } from "./ui";
+import { HourTag, cityOf } from "./ui";
 
 export const FALLBACK_MIN_DATE = "2018-04-01"; // server/vayu/api.py MIN_DATE, until meta arrives
 const todayUtc = () => new Date().toISOString().slice(0, 10);
@@ -141,7 +141,7 @@ export function TopBar({ date: requested, onDate, actions }: TopBarProps) {
       <div className="brand">VAYU<span>·</span>TRACE</div>
       <DateInput date={date} min={meta?.notes.min_date ?? FALLBACK_MIN_DATE} max={todayUtc()} onDate={onDate} />
       <div className="chip clock num" data-testid="ist-clock">
-        {meta ? fmtIST(meta.hours[hour]) : DASH}
+        {meta ? fmtIST(meta.hours[hour]) : DASH} <HourTag />
       </div>
       <div className="chip-group" role="group" aria-label="Layers">
         <Chip label="PM2.5" on={layers.pm25 && !layers.aqi && !compare} onClick={() => plume("pm25")} />

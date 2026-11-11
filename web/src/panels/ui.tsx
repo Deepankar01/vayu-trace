@@ -1,6 +1,7 @@
 /** Small shared controls for the panels: info tooltip, switch, labelled range slider. */
 import { useId, type CSSProperties, type ReactNode } from "react";
 import type { CityMeta, Meta } from "../api/types";
+import { useApp } from "./storeContext";
 
 /** The selected city, or Delhi, or the first city. */
 export function cityOf(meta: Meta | null, selected: string | null): CityMeta | null {
@@ -65,4 +66,25 @@ export function Slider({ label, value, min, max, step, color, disabled, onChange
 
 export function Dot({ color, muted }: { color: string; muted?: boolean }) {
   return <i className={`dot${muted ? " dot-muted" : ""}`} style={{ background: color }} aria-hidden="true" />;
+}
+
+export const FORECAST_TAG = "forecast";
+export const FIRES_ASSUMED_TAG = "fires assumed";
+
+/**
+ * A small pill marking the playhead hour where values are read: "forecast" on a forecast hour,
+ * "fires assumed" on an hour whose fires are assumed by persistence but whose weather is not a
+ * forecast. Nothing on an observed hour. The same pill is used in every place.
+ */
+export function HourTag() {
+  const forecast = useApp((s) => s.meta !== null && s.isForecastHour(s.hour));
+  const assumed = useApp((s) => s.meta !== null && s.isFireAssumedHour(s.hour));
+  if (!forecast && !assumed) return null;
+  const text = forecast ? FORECAST_TAG : FIRES_ASSUMED_TAG;
+  return (
+    <span className="hour-tag" data-testid="hour-tag"
+      title={forecast ? "Forecast hour: forecast weather, fires assumed to continue" : "Fire emissions at this hour are assumed (persistence), weather is observed"}>
+      {text}
+    </span>
+  );
 }

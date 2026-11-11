@@ -221,7 +221,28 @@ describe("CityPanel", () => {
     expect(dashed.getAttribute("d")!.startsWith(`M${x(24)},`)).toBe(true);
     const band = container.querySelector(".fires-band rect")!;
     expect(Number(band.getAttribute("x"))).toBeCloseTo(24 + (20 / 29) * 260, 6);
-    expect(screen.getByText("fires assumed")).toBeInTheDocument();
+    expect(within(screen.getByRole("img", { name: /Model vs measured/ })).getByText("fires assumed")).toBeInTheDocument();
+  });
+
+  it("tags the header and breakdown title 'fires assumed' or 'forecast' at the playhead hour", () => {
+    const meta = makeMeta({ hours: N, forecast_from: 24, fires_assumed_from: 20, cities: [delhi(sim100)] });
+    const { store } = renderPanel(<CityPanel />, { meta, hour: 19 });
+    expect(screen.queryAllByTestId("hour-tag")).toHaveLength(0);
+    act(() => store.getState().setHour(20));
+    const tags = screen.getAllByTestId("hour-tag");
+    expect(tags.map((t) => t.textContent)).toEqual(["fires assumed", "fires assumed"]);
+    expect(within(screen.getByTestId("breakdown-title")).getByTestId("hour-tag")).toBeInTheDocument();
+    act(() => store.getState().setHour(25));
+    expect(screen.getAllByTestId("hour-tag").map((t) => t.textContent)).toEqual(["forecast", "forecast"]);
+  });
+
+  it("labels the 24 h mean beside the category and the hourly value beneath", () => {
+    const veh = flat(N, 60).map((v, h) => (h === H ? 300 : v)); // hour H: 340, others 100
+    const meta = makeMeta({ hours: N, cities: [delhi({ vehicles_delhi_ncr: veh, fire_punjab: flat(N, 40) })] });
+    renderPanel(<CityPanel />, { meta, hour: H });
+    // 24 h mean over hours 0..20: (20 x 100 + 340) / 21 = 111.4
+    expect(screen.getByTestId("sim-category").textContent).toMatch(/· PM2\.5 111 µg\/m³ \(24 h mean\)$/);
+    expect(screen.getByTestId("sim-hourly").textContent).toBe("this hour: 340 µg/m³");
   });
 
   it("draws the model vs measured chart with a now marker", () => {

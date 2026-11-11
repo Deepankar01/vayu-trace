@@ -893,7 +893,27 @@ button:disabled {
 }
 .time-block {
   flex: none;
-  width: 132px;
+  min-width: 132px;
+}
+/* "forecast" / "fires assumed" beside a value read at the playhead hour (same in every place) */
+.hour-tag {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  white-space: nowrap;
+}
+.sim-aqi-line {
+  display: flex;
+  align-items: center;
 }
 .clock-big {
   font-size: 15px;
