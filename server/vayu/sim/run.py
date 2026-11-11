@@ -28,6 +28,7 @@ reading its own frames. `load_run` follows the pointer and serves the run only w
 valid for the date (same constants, same window, final or fresh). Superseded run directories are
 deleted once they are more than RETAIN_SUPERSEDED old.
 """
+import hashlib
 import json
 import math
 import os
@@ -42,8 +43,9 @@ from pathlib import Path
 
 import numpy as np
 
-from vayu import config, domain, terrain
+from vayu import config, domain, receptors, terrain
 from vayu import constants as C
+from vayu.cities import CITIES
 from vayu.clients import firms
 from vayu.clients.openmeteo import ARCHIVE_FINAL_AFTER, fetch_met
 from vayu.constants import DT_S, HAZE_GROWTH_COEFF, HAZE_RH_CAP, KERNEL_AGE_H, KERNEL_HALF_WIDTH
@@ -140,6 +142,12 @@ def fires_assumed_from(start: datetime, now: datetime, hours: int) -> int | None
     return first if first < hours else None
 
 
+def cities_digest() -> str:
+    """SHA-256 of the city list (ids and coordinates): stored city series depend on it."""
+    spec = [[c.id, c.lat, c.lon] for c in CITIES]
+    return hashlib.sha256(json.dumps(spec).encode()).hexdigest()
+
+
 def constants_snapshot(*, spinup_h: int | None = None,
                        particles: tuple[int, int] | None = None) -> dict:
     """Every setting that affects a run's results, read at call time (JSON-normalised).
@@ -183,6 +191,8 @@ def constants_snapshot(*, spinup_h: int | None = None,
         "WINDOW_H": WINDOW_H,
         "PARTICLES_PER_TAG_HOUR": default_n,
         "PARTICLES_REST_OF_INDIA": roi_n,
+        "cities.digest": cities_digest(),
+        "receptors.RECEPTORS_VERSION": receptors.RECEPTORS_VERSION,
     })
     return json.loads(json.dumps(snap))
 

@@ -180,6 +180,16 @@ def test_cache_rebuilt_when_conversion_changes(tmp_path, monkeypatch):
     assert total(inventory.inventory_emissions(), "residential_rest_of_india") == pytest.approx(before / 2)
 
 
+def test_cache_rebuilt_when_loader_version_changes(tmp_path, monkeypatch):
+    install_fake_inventory(tmp_path)
+    inventory.inventory_emissions()
+    cache = next(config.data_dir().rglob("*.npz"))
+    stamp = cache.stat().st_mtime_ns
+    monkeypatch.setattr(inventory, "INVENTORY_LOADER_VERSION", inventory.INVENTORY_LOADER_VERSION + 1)
+    inventory.inventory_emissions()
+    assert cache.stat().st_mtime_ns != stamp  # rewritten under the new key
+
+
 def test_valid_cache_without_source_files_raises(tmp_path):
     install_fake_inventory(tmp_path)
     inventory.inventory_emissions()

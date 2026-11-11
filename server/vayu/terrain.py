@@ -4,6 +4,7 @@ Each 0.1 degree cell is the mean of the tile pixels whose centres fall inside it
 tile pixels are NaN. Sea cells keep Terrarium's bathymetry (negative values).
 """
 import io
+import json
 import math
 import os
 import uuid
@@ -101,9 +102,29 @@ def _fetch_tile(client: httpx.Client, x: int, y: int) -> bytes:
     return _validated_tile(resp.content, x, y)
 
 
+def grid_key() -> str:
+    """What the persisted grid depends on: tile source, zoom and the model grid. Stored beside
+    `terrain.npy` as `terrain.key.json`; a mismatch means rebuild (from cached tiles)."""
+    return json.dumps({"zoom": ZOOM, "tile_url": TILE_URL,
+                       "grid": [LON_MIN, LAT_MIN, CELL, NX, NY]}, sort_keys=True)
+
+
+def _write_atomic(path, write) -> None:
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    with open(tmp, "wb") as f:
+        write(f)
+    os.replace(tmp, path)
+
+
 def _load_grid(path) -> np.ndarray | None:
-    """The persisted grid, or None if missing, unreadable or incomplete."""
-    if not path.is_file():
+    """The persisted grid, or None if missing, unreadable, incomplete or built for another key."""
+    key_path = path.with_name("terrain.key.json")
+    if not path.is_file() or not key_path.is_file():
+        return None
+    try:
+        if key_path.read_text() != grid_key():
+            return None
+    except OSError:
         return None
     try:
         grid = np.load(path, allow_pickle=False)
@@ -134,10 +155,8 @@ def elevation() -> np.ndarray:
         if np.isnan(grid).any():
             raise UpstreamError("terrain", "tiles do not cover the whole model domain")
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-        with open(tmp, "wb") as f:
-            np.save(f, grid)
-        os.replace(tmp, path)
+        _write_atomic(path, lambda f: np.save(f, grid))
+        _write_atomic(path.with_name("terrain.key.json"), lambda f: f.write(grid_key().encode()))
     grid.setflags(write=False)
     _memo = grid
     return grid

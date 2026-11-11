@@ -56,12 +56,14 @@ from vayu.receptors import USER_COLOR, back_trajectory, city_region, city_series
 from vayu.sim.run import (
     PARTICLES_PER_TAG_HOUR,
     RunResult,
+    constants_snapshot,
     load_run,
     parcels_per_tag_hour,
     run_date,
     simulate,
 )
 from vayu.terrain import elevation
+from vayu.validate import constants_hash
 
 log = logging.getLogger("vayu.api")
 # httpx logs every request URL at INFO, and the FIRMS key travels in its URL path
@@ -354,9 +356,10 @@ def _extras(b: _Build) -> dict:
             return b._extras
         cities_p, fires_p = b.extras_dir / "cities.json", b.extras_dir / "fires.json"
         if cities_p.is_file() and fires_p.is_file():
-            b._extras = {"cities": json.loads(cities_p.read_text()),
-                         "fires": json.loads(fires_p.read_text())}
-            return b._extras
+            stored = json.loads(cities_p.read_text())
+            if all(c.id in stored for c in CITIES):  # else stale (written for another city list)
+                b._extras = {"cities": stored, "fires": json.loads(fires_p.read_text())}
+                return b._extras
         series = city_series(b.run, b.met(), b.met_offset_h)
         cities = {}
         for cid, s in series.items():
@@ -680,8 +683,9 @@ def get_meta(run_id: str):
         e = ex["cities"][c.id]
         by_tag = dict(e["by_tag"])
         for u, m in users.items():
-            if not _all_zero(m["by_city"][c.id]):
-                by_tag[u] = m["by_city"][c.id]
+            series = m["by_city"].get(c.id)  # absent if the city list changed since
+            if series is not None and not _all_zero(series):
+                by_tag[u] = series
         cities.append({"id": c.id, "name": c.name, "lat": c.lat, "lon": c.lon,
                        "region": city_region(c), "by_tag": by_tag,
                        "fire_age_h": e["fire_age_h"], "met": e["met"]})
@@ -802,4 +806,7 @@ def get_validation():
     path = config.data_dir() / "validation.json"
     if not path.is_file():
         raise HTTPException(404, "no validation results yet")
-    return _json(json.loads(path.read_text()))
+    report = json.loads(path.read_text())
+    # computed per request, the file is not rewritten: True if made with other model settings
+    report["stale"] = report.get("constants_sha256") != constants_hash(constants_snapshot())
+    return _json(report)

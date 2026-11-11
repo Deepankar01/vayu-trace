@@ -361,7 +361,8 @@ EXPECTED_SNAPSHOT_KEYS = sorted([
     "firms.SATELLITES", "firms.HISTORY_DAYS", "firms.STATIC_MIN_DAYS", "firms.STATIC_CELL_DEG",
     "fires.FORECAST_BASIS_DAYS", "terrain.ZOOM", "terrain.TILE_URL", "inventory.RELEASE",
     "inventory.YEAR", "inventory.EDGAR_SECTORS", "inventory.notes", "SPINUP_H", "WINDOW_H",
-    "PARTICLES_PER_TAG_HOUR", "PARTICLES_REST_OF_INDIA",
+    "PARTICLES_PER_TAG_HOUR", "PARTICLES_REST_OF_INDIA", "cities.digest",
+    "receptors.RECEPTORS_VERSION",
 ])
 
 
@@ -642,3 +643,11 @@ def test_simultaneous_builds_both_succeed(offline, monkeypatch, tmp_path):
     assert load_run(PAST, NOW).run_id in {r.run_id for r in results}
     for r in results:
         assert np.any(r.frame(0)["vehicles_delhi_ncr"])
+
+
+def test_cities_digest_tracks_ids_and_coordinates(monkeypatch):
+    before = run.cities_digest()
+    moved = (run.CITIES[0]._replace(lat=run.CITIES[0].lat + 0.01), *run.CITIES[1:])
+    monkeypatch.setattr(run, "CITIES", moved)
+    assert run.cities_digest() != before
+    assert run.constants_snapshot()["cities.digest"] == run.cities_digest()

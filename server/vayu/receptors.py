@@ -43,6 +43,8 @@ assert set(_REGION_NAMES) == set(REGIONS) and set(_FIRE_STATE_NAMES) == set(FIRE
 
 _FIRE_KINDS = ("fire", "firefc")
 CALM_MS = 0.1  # below this wind speed the direction is undefined (NaN)
+# Bump on any change to how city values are derived from a run (stored runs then rebuild).
+RECEPTORS_VERSION = 1
 
 
 def _lookup(tag_id: str):

@@ -86,6 +86,7 @@ def test_elevation_fetches_every_tile_once_then_serves_from_cache(tmp_path):
     first = terrain.elevation()
     assert route.call_count == len(terrain.tiles_needed())
     assert (tmp_path / "cache" / "terrain.npy").is_file()
+    assert (tmp_path / "cache" / "terrain.key.json").read_text() == terrain.grid_key()
     assert terrain.elevation() is first
     terrain._memo = None
     np.testing.assert_array_equal(terrain.elevation(), first)  # from the .npy
@@ -123,6 +124,19 @@ def test_bad_persisted_grid_is_rebuilt(tmp_path, make_bad):
     assert route.call_count == len(terrain.tiles_needed())
     assert grid.shape == (terrain.NY, terrain.NX) and not np.isnan(grid).any()
     assert np.load(path).shape == (terrain.NY, terrain.NX)
+
+
+def test_persisted_grid_with_another_key_is_rebuilt(tmp_path):
+    with respx.mock:
+        _mock_all_tiles()
+        terrain.elevation()
+    (tmp_path / "cache" / "terrain.key.json").write_text('{"zoom": 5}')
+    terrain._memo = None
+    with respx.mock:
+        route = _mock_all_tiles()
+        terrain.elevation()
+    assert route.call_count == 0  # tiles come from the tile cache, the grid is rebuilt
+    assert (tmp_path / "cache" / "terrain.key.json").read_text() == terrain.grid_key()
 
 
 @pytest.mark.parametrize("body", [b"<html>captive portal</html>", b"\x89PNG\r\n\x1a\ntruncated"])

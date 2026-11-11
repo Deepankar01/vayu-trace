@@ -155,12 +155,17 @@ def split_by_region(grids: dict[str, np.ndarray]) -> Emissions:
     return em
 
 
+# Bump on any change to `read_grid`, the sector mapping or the conversion: cached grids rebuild.
+INVENTORY_LOADER_VERSION = 1
+
+
 def _cache_key() -> str:
-    """Hash of everything the cached grids depend on: sector mapping, conversion, domain grid and
-    each source file's size and modification time."""
+    """Hash of everything the cached grids depend on: loader version, sector mapping, conversion,
+    domain grid and each source file's size and modification time."""
     folder = _inventory_dir()
     stats = [(n, (folder / n).stat().st_size, (folder / n).stat().st_mtime_ns) for n in source_files()]
-    spec = [EDGAR_SECTORS, HOURS_PER_YEAR, (NY, NX, LAT_MIN, LON_MIN, CELL), stats]
+    spec = [INVENTORY_LOADER_VERSION, EDGAR_SECTORS, HOURS_PER_YEAR,
+            (NY, NX, LAT_MIN, LON_MIN, CELL), stats]
     return hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()
 
 

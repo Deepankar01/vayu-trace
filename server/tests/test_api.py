@@ -178,6 +178,21 @@ def test_post_run_then_ready(env):
     assert c.get("/api/runs/2023-11-05/meta").status_code == 200
 
 
+def test_meta_rebuilds_stored_extras_missing_a_city(env):
+    """Stored city series written before a city was added are stale: rebuilt, not a KeyError."""
+    c = ready(env)
+    extras = env["fake"].out_dir.parent / f"{env['fake'].run_id}.extras"
+    extras.mkdir(parents=True, exist_ok=True)
+    (extras / "cities.json").write_text(json.dumps({"delhi": {"by_tag": {}, "fire_age_h": [],
+                                                              "met": {}}}))
+    (extras / "fires.json").write_text("[]")
+    r = c.get("/api/runs/2023-11-05/meta")
+    assert r.status_code == 200
+    ids = [city["id"] for city in r.json()["cities"]]
+    assert ids == [city.id for city in CITIES]
+    assert set(json.loads((extras / "cities.json").read_text())) == {city.id for city in CITIES}
+
+
 def test_post_existing_valid_run_returns_200(env):
     r = ready(env).post("/api/runs", json={"date": "2023-11-05"})
     assert r.status_code == 200 and r.json() == {"run_id": "2023-11-05", "status": "ready"}
@@ -769,7 +784,21 @@ def test_validation_404_then_contents(env, tmp_path):
     c = env["client"]
     assert c.get("/api/validation").status_code == 404
     (tmp_path / "validation.json").write_text(json.dumps({"cities": {"delhi": {"r": 0.5}}}))
-    assert c.get("/api/validation").json() == {"cities": {"delhi": {"r": 0.5}}}
+    # no constants hash: generated with unknown settings, so stale
+    assert c.get("/api/validation").json() == {"cities": {"delhi": {"r": 0.5}}, "stale": True}
+
+
+def test_validation_stale_flag_compares_constants_hash(env, tmp_path):
+    from vayu.sim.run import constants_snapshot
+    from vayu.validate import constants_hash
+    c = env["client"]
+    current = constants_hash(constants_snapshot())
+    path = tmp_path / "validation.json"
+    path.write_text(json.dumps({"constants_sha256": current}))
+    assert c.get("/api/validation").json()["stale"] is False
+    path.write_text(json.dumps({"constants_sha256": "0" * 64}))
+    assert c.get("/api/validation").json()["stale"] is True
+    assert json.loads(path.read_text()) == {"constants_sha256": "0" * 64}  # file not rewritten
 
 
 KEYS = {"FIRMS_MAP_KEY": "fk-PLANTED-1a2b3c", "OPENAQ_API_KEY": "oq-PLANTED-4d5e6f",
