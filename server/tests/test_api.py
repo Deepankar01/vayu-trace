@@ -463,7 +463,7 @@ def test_numpy_values_through_real_routes(env, monkeypatch):
         np.array([1.5, np.nan, np.inf], np.float32), np.int64(2)))
     monkeypatch.setattr(api, "live_pm25", lambda city: np.float32(55.5))
     env["fake"].start = NOW - timedelta(hours=1)  # so `live` is requested
-    r = c.get("/api/runs/2023-11-05/cities/delhi/measured")
+    r = c.get("/api/runs/2023-11-05/cities/delhi/measured?live=1")
     assert r.status_code == 200
     body = json.loads(r.text, parse_constant=lambda x: pytest.fail(f"non-JSON constant {x}"))
     assert body["values"] == [1.5, None, None] and body["station_count"] == 2
@@ -697,16 +697,26 @@ def test_measured_no_stations_returns_nulls(env):
     assert env["live_calls"] == 0  # the window does not include the current hour
 
 
-def test_measured_live_only_when_window_includes_now(env, monkeypatch):
+def test_measured_live_off_by_default_even_when_window_includes_now(env):
     c = ready(env)
     env["fake"].start = NOW - timedelta(hours=1)  # the window includes the current hour
-    assert c.get("/api/runs/2023-11-05/cities/delhi/measured").json()["live"] == 55.0
+    body = c.get("/api/runs/2023-11-05/cities/delhi/measured").json()
+    assert body["live"] is None and body["live_error"] is None
+    assert env["live_calls"] == 0
+
+
+def test_measured_live_only_when_requested_and_window_includes_now(env, monkeypatch):
+    c = ready(env)
+    assert c.get("/api/runs/2023-11-05/cities/delhi/measured?live=1").json()["live"] is None
+    assert env["live_calls"] == 0  # the window does not include the current hour
+    env["fake"].start = NOW - timedelta(hours=1)  # the window includes the current hour
+    assert c.get("/api/runs/2023-11-05/cities/delhi/measured?live=1").json()["live"] == 55.0
 
     def down(city):
         raise UpstreamError("data.gov.in", "HTTP 502")
 
     monkeypatch.setattr(api, "live_pm25", down)
-    r = c.get("/api/runs/2023-11-05/cities/delhi/measured")
+    r = c.get("/api/runs/2023-11-05/cities/delhi/measured?live=1")
     assert r.status_code == 200
     assert r.json()["live"] is None and r.json()["live_error"] == "data.gov.in: HTTP 502"
 
@@ -742,6 +752,10 @@ def test_post_source_simulates_only_that_source(env):
     assert body["by_city"]["chennai"] == [0.0, 0.0, 0.0]
     m = c.get("/api/runs/2023-11-05/meta").json()
     assert m["tags"][-1]["id"] == "user_1" and m["tags"][-1]["kind"] == "user"
+    # restored after a page reload: what the browser needs for the marker and details
+    assert m["tags"][-1]["source"] == {k: SOURCE[k] for k in (
+        "kind", "lon", "lat", "start_hour", "duration_h", "amount")}
+    assert all("source" not in t for t in m["tags"][:-1])
     assert "user_1" in next(x for x in m["cities"] if x["id"] == "delhi")["by_tag"]
 
 
@@ -880,7 +894,7 @@ def test_no_key_in_any_response(env, monkeypatch, caplog):
         env["fake"].start = NOW - timedelta(hours=1)
         monkeypatch.setattr(api, "city_pm25", lambda *a, **k: MeasuredSeries(np.zeros(3), 1))
         monkeypatch.setattr(api, "live_pm25", live_raises)
-        bodies.append(c.get("/api/runs/2023-11-05/cities/delhi/measured").content)
+        bodies.append(c.get("/api/runs/2023-11-05/cities/delhi/measured?live=1").content)
         env["fake"].start = START
         monkeypatch.setattr(api, "run_date", run_raises)
         monkeypatch.setattr(api, "fetch_met", raises)

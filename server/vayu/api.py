@@ -85,6 +85,7 @@ if _SIM is None or _SIM.kind != "sector" or (
     raise RuntimeError(
         f"SIM_TAG {SIM_TAG!r} must be a catalogue sector tag with the default parcel budget "
         f"({PARTICLES_PER_TAG_HOUR} per hour); pick another stand-in tag for dropped sources")
+_SOURCE_FIELDS = ("kind", "lon", "lat", "start_hour", "duration_h", "amount")  # in /meta
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _USER = re.compile(r"user_[1-9]\d*")
 
@@ -691,7 +692,8 @@ def get_meta(run_id: str):
              "region": by_id[t].region, "label": by_id[t].label, "color": by_id[t].color}
             for t in run.tags]
     tags += [{"id": u, "kind": "user", "sector": None, "region": None, "label": m["label"],
-              "color": m["color"]} for u, m in users.items()]
+              "color": m["color"], "source": {k: m[k] for k in _SOURCE_FIELDS}}
+             for u, m in users.items()]
     cities = []
     for c in CITIES:
         e = ex["cities"][c.id]
@@ -779,7 +781,9 @@ def get_cams(run_id: str, city_id: str, build: str | None = None):
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/measured")
-def get_measured(run_id: str, city_id: str, build: str | None = None):
+def get_measured(run_id: str, city_id: str, build: str | None = None, live: int = 0):
+    """CPCB via OpenAQ. The data.gov.in live value is fetched only with `?live=1` (the browser
+    does not ask for it: the feed's replies could not be verified)."""
     run = _resolve(run_id, build).run
     city = _city(city_id)
     now = _now()
@@ -787,14 +791,14 @@ def get_measured(run_id: str, city_id: str, build: str | None = None):
         m = city_pm25(city, run.start, run.hours, now=now)
     except UpstreamError as exc:
         raise _upstream(exc) from None
-    live, live_error = None, None
-    if run.start <= now < run.start + timedelta(hours=run.hours):
+    live_value, live_error = None, None
+    if live == 1 and run.start <= now < run.start + timedelta(hours=run.hours):
         try:
-            live = live_pm25(city)
+            live_value = live_pm25(city)
         except UpstreamError as exc:
             live_error = _scrub(f"{exc.service}: {exc.message}")
-    return _json({"values": _series(m.values), "station_count": m.station_count, "live": live,
-                  "live_error": live_error, "source": "CPCB via OpenAQ",
+    return _json({"values": _series(m.values), "station_count": m.station_count,
+                  "live": live_value, "live_error": live_error, "source": "CPCB via OpenAQ",
                   "aligned": "hour mean, overlap-weighted"})
 
 
