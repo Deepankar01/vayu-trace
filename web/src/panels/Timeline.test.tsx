@@ -16,6 +16,14 @@ describe("Timeline", () => {
     expect(screen.queryByText(CONTINUE)).toBeNull();
     expect(screen.queryByText(STOP)).toBeNull();
   });
+  it("legend: solid = past hours, dashed = forecast only when there is a forecast", () => {
+    const { unmount } = renderPanel(<Timeline />);
+    expect(screen.getByText("solid = past hours (observed weather and fires)")).toBeInTheDocument();
+    expect(screen.queryByText("dashed = forecast")).toBeNull();
+    unmount();
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
+    expect(screen.getByText("dashed = forecast")).toBeInTheDocument();
+  });
   it("caption whenever fires are assumed (continue by default)", () => {
     renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
     expect(screen.getByText(CONTINUE)).toBeInTheDocument();

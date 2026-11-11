@@ -1,9 +1,11 @@
 /**
  * The "Drop source" dialog, opened next to the picked map point. The server simulates the source
  * (a few seconds); on success the dialog closes and the source appears under "Added sources", on
- * failure the server's message is shown here. Escape or Cancel closes it.
+ * failure the server's message is shown here. Escape, Cancel or a click outside closes it, except
+ * while the request is in flight (`busy` in the drop store). Tab cycles inside the dialog; on
+ * close focus returns to the "Drop source" button.
  */
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { useDropStore } from "../map/dropStore";
 import { fmtIST, fmtNumber } from "../lib/format";
 import { DEFAULT_DURATION_H, DROP_KINDS, FIREWORKS_SIZES, MAX_DURATION_H, validateDrop, type DropErrors } from "./dropKinds";
@@ -35,9 +37,11 @@ export function DropSourceDialog() {
   const [start, setStart] = useState(playhead);
   const [durText, setDurText] = useState(String(DEFAULT_DURATION_H));
   const [errors, setErrors] = useState<DropErrors>({});
-  const [busy, setBusy] = useState(false);
+  const busy = useDropStore((d) => d.busy);
   const [serverError, setServerError] = useState<string | null>(null);
   const firstField = useRef<HTMLSelectElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const wasOpen = useRef(false);
   const titleId = useId();
 
   // a new point resets the form to the playhead hour (deliberately not on playhead changes)
@@ -45,7 +49,13 @@ export function DropSourceDialog() {
     setStart(playhead);
     setErrors({});
     setServerError(null);
-    firstField.current?.focus();
+    if (point) {
+      wasOpen.current = true;
+      firstField.current?.focus();
+    } else if (wasOpen.current) {
+      wasOpen.current = false;
+      document.querySelector<HTMLElement>("[data-drop-button]")?.focus();
+    }
   }, [point]);
 
   if (!point || !meta) return null;
@@ -55,20 +65,41 @@ export function DropSourceDialog() {
   const durationH = Number(durText);
   const truncated = Number.isInteger(durationH) && start + durationH > n;
 
-  const close = () => !busy && useDropStore.getState().close();
+  const close = () => useDropStore.getState().close(); // no-op while busy
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const errs = validateDrop({ kind, amount, startHour: start, durationH }, n);
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
-    setBusy(true);
+    const drop = useDropStore.getState();
+    drop.setBusy(true);
     setServerError(null);
-    await store.getState().addSource({ kind, lon: point.lon, lat: point.lat, amount, start_hour: start, duration_h: durationH });
-    setBusy(false);
+    try {
+      await store.getState().addSource({ kind, lon: point.lon, lat: point.lat, amount, start_hour: start, duration_h: durationH });
+    } finally {
+      drop.setBusy(false);
+    }
     const err = store.getState().sourceError;
     if (err) setServerError(err);
     else useDropStore.getState().close();
+  };
+
+  /** Focus trap: Tab and Shift+Tab cycle through the dialog's enabled controls. */
+  const trap = (e: KeyboardEvent<HTMLFormElement>) => {
+    if (e.key !== "Tab" || !formRef.current) return;
+    const items = [...formRef.current.querySelectorAll<HTMLElement>("button, input, select, textarea, [tabindex]")]
+      .filter((el) => !(el as HTMLButtonElement).disabled && el.tabIndex >= 0);
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
   };
 
   const pos = anchor(point.x, point.y);
@@ -76,7 +107,8 @@ export function DropSourceDialog() {
     <div className="dialog-layer" onPointerDown={(e) => e.target === e.currentTarget && close()}>
       <span className="drop-pin" style={{ left: point.x, top: point.y }} aria-hidden="true" />
       <form
-        className="panel dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}
+        ref={formRef} onKeyDown={trap}
+        className="panel dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-busy={busy}
         style={{ left: pos.left, top: pos.top, width: DIALOG_W }} onSubmit={submit} noValidate
       >
         <h4 id={titleId}>Add a source</h4>

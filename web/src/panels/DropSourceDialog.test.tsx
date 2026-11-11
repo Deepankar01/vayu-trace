@@ -1,8 +1,10 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useDropStore } from "../map/dropStore";
 import { renderPanel } from "../test-utils/panels";
 import { DropSourceDialog } from "./DropSourceDialog";
+import { useKeyboard } from "./keyboard";
+import { useAppStore } from "./storeContext";
 import { validateDrop } from "./dropKinds";
 
 describe("validateDrop", () => {
@@ -29,7 +31,46 @@ describe("validateDrop", () => {
 
 describe("DropSourceDialog", () => {
   beforeEach(() => useDropStore.setState({ armedForDrop: false, pending: { lon: 77.2, lat: 28.6, x: 500, y: 400 } }));
-  afterEach(() => useDropStore.setState({ armedForDrop: false, pending: null }));
+  afterEach(() => useDropStore.setState({ armedForDrop: false, pending: null, busy: false }));
+
+  function WithKeys() {
+    useKeyboard(useAppStore());
+    return null;
+  }
+
+  it("Escape mid-submit keeps the dialog, so the server error is still shown", async () => {
+    const { store } = renderPanel(<><WithKeys /><DropSourceDialog /></>);
+    let finish!: () => void;
+    store.setState({
+      addSource: () =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            store.setState({ sourceError: "simulation failed: out of memory" });
+            resolve();
+          };
+        }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add source" }));
+    await waitFor(() => expect(useDropStore.getState().busy).toBe(true));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(useDropStore.getState().pending).not.toBeNull();
+    await act(async () => finish());
+    expect(screen.getByRole("alert")).toHaveTextContent("simulation failed: out of memory");
+    expect(useDropStore.getState().busy).toBe(false);
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    expect(useDropStore.getState().pending).toBeNull();
+  });
+
+  it("traps Tab inside the dialog", () => {
+    renderPanel(<DropSourceDialog />);
+    const add = screen.getByRole("button", { name: "Add source" });
+    add.focus();
+    fireEvent.keyDown(add, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByLabelText("Kind"));
+    fireEvent.keyDown(screen.getByLabelText("Kind"), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(add);
+  });
 
   it("defaults the start to the playhead hour and shows the kind's assumption", () => {
     renderPanel(<DropSourceDialog />, { hour: 13.4 });

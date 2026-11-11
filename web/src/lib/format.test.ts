@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MINUS, compass16, fmtError, fmtIST, fmtISTDay, fmtISTHour, fmtNumber, fmtShare, istDateKey,
+  MINUS, compass16, fmtError, fmtIST, fmtISTDay, fmtISTHour, fmtNumber, fmtShare, fmtSharesToWhole, istDateKey,
 } from "./format";
 
 describe("fmtShare", () => {
@@ -77,5 +77,34 @@ describe("fmtNumber", () => {
   it("is a dash for missing", () => {
     expect(fmtNumber(null)).toBe("–");
     expect(fmtNumber(NaN)).toBe("–");
+  });
+});
+
+describe("fmtSharesToWhole", () => {
+  const sum = (xs: string[]) => xs.reduce((a, x) => a + (x === "<1%" ? 0 : parseInt(x, 10)), 0);
+  it("sums to 100 where independent rounding gave 99", () => {
+    const third = 1 / 3;
+    expect([third, third, third].map(fmtShare)).toEqual(["33%", "33%", "33%"]);
+    const out = fmtSharesToWhole([third, third, third]);
+    expect(sum(out)).toBe(100);
+    expect(out).toEqual(["33%", "33%", "34%"]);
+  });
+  it("sums to 100 where independent rounding gave 101", () => {
+    const xs = [0.335, 0.335, 0.33];
+    expect(xs.map(fmtShare)).toEqual(["34%", "34%", "33%"]);
+    const out = fmtSharesToWhole(xs);
+    expect(sum(out)).toBe(100);
+    expect(out).toEqual(["33%", "34%", "33%"]);
+  });
+  it("keeps a trailing 37.5% at 38% (ties go to the later entry)", () => {
+    expect(fmtSharesToWhole([0.375, 0.25, 0.375])).toEqual(["37%", "25%", "38%"]);
+  });
+  it("shows <1% for tiny positive shares and counts them as 0", () => {
+    const out = fmtSharesToWhole([0.996, 0.004]);
+    expect(out).toEqual(["100%", "<1%"]);
+  });
+  it("falls back to per-entry formatting with nulls or nothing positive", () => {
+    expect(fmtSharesToWhole([null, 0.5])).toEqual(["–", "50%"]);
+    expect(fmtSharesToWhole([0, 0])).toEqual(["0%", "0%"]);
   });
 });

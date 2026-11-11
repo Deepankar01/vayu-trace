@@ -47,7 +47,8 @@ export function ModelChart(p: ModelChartProps) {
   const y = linear(0, top, T + PH, T);
   const ff = p.forecastFrom;
   const solid = runs(p.sim, 0, ff ?? n - 1);
-  const dashed = ff === null ? [] : runs(p.sim, Math.max(0, ff - 1), n - 1);
+  // solid through forecast_from, dashed from it: the two meet at the first forecast hour
+  const dashed = ff === null ? [] : runs(p.sim, ff, n - 1);
   const cams = p.cams ? runs(p.cams, 0, n - 1) : [];
   const h = hover ?? Math.floor(p.hour);
 

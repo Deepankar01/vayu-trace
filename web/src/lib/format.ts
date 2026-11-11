@@ -84,3 +84,26 @@ export function compass16(deg: number | null): string {
   const i = Math.round((((deg % 360) + 360) % 360) / 22.5) % 16;
   return POINTS[i];
 }
+
+/**
+ * Whole-percent labels for shares that make up one whole (0..1 each), summing to exactly 100.
+ *
+ * Rule (largest remainder): an entry with a positive share under 0.5 % shows "<1%" and counts as
+ * 0; every other entry gets the floor of its percent, and the points still missing to reach 100
+ * go one each to the entries with the largest fractional parts (ties go to the later entry, so a
+ * trailing "Not explained by model" row keeps its conventionally rounded value). With any null
+ * share, or no positive share, each entry is formatted on its own with `fmtShare`.
+ */
+export function fmtSharesToWhole(shares: readonly (number | null)[]): string[] {
+  if (shares.some((s) => !ok(s)) || !shares.some((s) => (s as number) > 0)) return shares.map(fmtShare);
+  const pct = shares.map((s) => (s as number) * 100);
+  const tiny = pct.map((p) => p > 0 && p < 0.5);
+  const base = pct.map((p, i) => (tiny[i] ? 0 : Math.floor(p)));
+  let missing = 100 - base.reduce((a, b) => a + b, 0);
+  const order = pct
+    .map((p, i) => ({ i, r: tiny[i] ? -1 : p - Math.floor(p) }))
+    .filter((e) => e.r >= 0)
+    .sort((a, b) => b.r - a.r || b.i - a.i);
+  for (let k = 0; missing > 0 && order.length > 0; k = (k + 1) % order.length, missing--) base[order[k].i]++;
+  return base.map((b, i) => (tiny[i] ? "<1%" : `${b}%`));
+}

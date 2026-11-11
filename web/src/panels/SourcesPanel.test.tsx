@@ -55,6 +55,32 @@ describe("SourcesPanel", () => {
     expect(store.getState().sliders.vehicles).toBe(1);
   });
 
+  it("fires are 'observed', or say from when they are assumed", () => {
+    const { unmount } = renderPanel(<SourcesPanel />);
+    expect(screen.getByText("observed")).toBeInTheDocument();
+    unmount();
+    // hour 20 of the test window = 2026-11-10 20:00 UTC = 11 Nov 01:30 IST
+    renderPanel(<SourcesPanel />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
+    expect(screen.getByText("observed; assumed after 11 Nov · 01:30 IST")).toBeInTheDocument();
+  });
+
+  it("fire scaling tooltip states the run's default", () => {
+    const { unmount } = renderPanel(<SourcesPanel />);
+    expect(screen.getByText(/Default 1× means no correction\./)).toBeInTheDocument();
+    unmount();
+    renderPanel(<SourcesPanel />, { meta: makeMeta({ notes: notes({ fire_scaling_default: 1.5 }) }) });
+    expect(screen.getByText(/Default 1\.5×\./)).toBeInTheDocument();
+    expect(screen.queryByText(/means no correction/)).toBeNull();
+  });
+
+  it("removes an added source", async () => {
+    const { store } = renderPanel(<SourcesPanel />, { userSources: [user("user_1")] });
+    const removed: string[] = [];
+    store.setState({ removeSource: async (id) => void removed.push(id) });
+    fireEvent.click(screen.getByRole("button", { name: /Remove 1\. Custom source/ }));
+    expect(removed).toEqual(["user_1"]);
+  });
+
   it("fire scaling control sets the store and explains itself", () => {
     const { store } = renderPanel(<SourcesPanel />);
     fireEvent.change(screen.getByRole("slider", { name: "Fire scaling" }), { target: { value: "2.5" } });

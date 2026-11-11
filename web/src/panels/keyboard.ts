@@ -1,6 +1,7 @@
 /**
  * App keyboard shortcuts: Space play/pause, Left/Right one hour, Escape cancels drop arming or
- * closes the drop dialog. Keys typed into a form control (and Space on a focused button, which
+ * closes the drop dialog (not while it is submitting). While the dialog is open only Escape is
+ * handled. Keys typed into a form control (and Space on a focused button, which
  * the button handles itself) are never captured.
  */
 import { useEffect } from "react";
@@ -15,6 +16,8 @@ interface KeyInfo {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
+  /** The drop-source dialog is open: only Escape is a shortcut. */
+  dialogOpen?: boolean;
 }
 
 const FORM_TAGS = new Set(["INPUT", "SELECT", "TEXTAREA"]);
@@ -28,7 +31,7 @@ export function isFormTarget(target: EventTarget | null): boolean {
 /** The shortcut for a key event, or null to leave it alone. */
 export function keyAction(e: KeyInfo): KeyAction | null {
   if (e.key === "Escape") return "escape";
-  if (e.metaKey || e.ctrlKey || e.altKey || isFormTarget(e.target)) return null;
+  if (e.dialogOpen || e.metaKey || e.ctrlKey || e.altKey || isFormTarget(e.target)) return null;
   const onButton = e.target instanceof HTMLElement && (e.target.tagName === "BUTTON" || e.target.getAttribute("role") === "switch");
   if (e.key === " ") return onButton ? null : "toggle";
   if (e.key === "ArrowRight") return "next";
@@ -39,7 +42,10 @@ export function keyAction(e: KeyInfo): KeyAction | null {
 export function useKeyboard(store: AppStore): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const action = keyAction(e);
+      const action = keyAction({
+        key: e.key, target: e.target, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey,
+        dialogOpen: useDropStore.getState().pending !== null,
+      });
       if (!action) return;
       const s = store.getState();
       switch (action) {

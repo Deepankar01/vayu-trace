@@ -30,6 +30,11 @@ describe("keyAction", () => {
   it("Escape works even inside an input (closes the dialog)", () => {
     expect(keyAction({ key: "Escape", target: el("input") })).toBe("escape");
   });
+  it("only Escape while the drop dialog is open", () => {
+    expect(keyAction({ key: " ", target: document.body, dialogOpen: true })).toBeNull();
+    expect(keyAction({ key: "ArrowRight", target: document.body, dialogOpen: true })).toBeNull();
+    expect(keyAction({ key: "Escape", target: document.body, dialogOpen: true })).toBe("escape");
+  });
   it("ignores modified keys", () => {
     expect(keyAction({ key: "ArrowRight", target: document.body, metaKey: true })).toBeNull();
   });

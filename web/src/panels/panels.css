@@ -134,6 +134,21 @@ button:disabled {
   align-items: center;
   cursor: pointer;
 }
+.date-chip {
+  position: relative;
+}
+.date-hint {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: #1b2130;
+  border: 1px solid rgba(255, 106, 90, 0.5);
+  color: #ff8f7a;
+  font-size: 11px;
+  white-space: nowrap;
+}
 .date-chip:hover {
   border-color: rgba(255, 255, 255, 0.18);
 }
@@ -452,6 +467,31 @@ button:disabled {
 .user-label .dot {
   transform: translateY(-1px);
 }
+.user-source {
+  position: relative;
+  padding-right: 18px;
+}
+.remove-source {
+  position: absolute;
+  right: -4px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--mute);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+.remove-source:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+.fires-status {
+  text-align: right;
+}
 .user-meta {
   margin: -3px 0 4px 34px;
   font-size: 10.5px;
@@ -580,7 +620,7 @@ button:disabled {
   text-align: right;
   font-size: 11.5px;
   color: var(--mute);
-  max-width: 132px;
+  max-width: 160px;
 }
 .measured .m-aqi {
   font-size: 18px;
@@ -656,14 +696,21 @@ button:disabled {
   color: var(--text);
   flex: none;
 }
+.hour-compare {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  color: #c9cfdd;
+}
 .flag {
   margin: 6px 0 0;
   font-size: 11px;
   color: #d9b56a;
 }
-.legend + .note,
-.flag + .note {
-  margin: 8px 0 0;
+.note.share-note {
+  margin: 6px 0 0;
+}
+.nowrap {
+  white-space: nowrap;
 }
 .smoke {
   margin: 8px 0 0;
@@ -941,10 +988,11 @@ button:disabled {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 6px;
-  max-width: 300px;
+  gap: 2px;
+  max-width: 290px;
 }
 .speeds {
+  flex: none;
   display: flex;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -1315,7 +1363,11 @@ button:disabled {
     gap: 10px;
   }
   .top .chip {
-    padding: 5px 10px;
+    padding: 4px 8px;
+    font-size: 11.5px;
+  }
+  .top {
+    padding: 0 12px 0 14px;
   }
 }
 
@@ -1341,4 +1393,32 @@ button:disabled {
   .maplibregl-ctrl-bottom-right {
     right: 356px;
   }
+}
+
+.panel-error {
+  margin: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: #ff8f7a;
+}
+.panel-error b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The Validation button (ValidationDialog.tsx) sits in the top bar's chip row */
+.app-ui .top .vd-launch {
+  position: static;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-radius: 999px;
+  color: #c9cfdd;
+}
+.app-ui .top .vd-launch:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.18);
 }

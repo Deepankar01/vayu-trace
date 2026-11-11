@@ -1,7 +1,7 @@
 /**
  * Bottom bar: play/pause, IST time of the playhead hour, a scrubber over the run window (solid
  * replay, dashed forecast, IST day ticks, fires-assumed marker) and the speed in simulated hours
- * per second. The caption states the fire assumption whenever fire hours are assumed.
+ * per second. The captions say what solid and dashed mean, and the caption states the fire assumption whenever fire hours are assumed.
  */
 import { useMapStatus } from "../map/mapStatus";
 import { DASH, fmtISTShort } from "../lib/format";
@@ -11,6 +11,8 @@ import { useApp, useAppStore } from "./storeContext";
 
 export const CAPTION_CONTINUE = "forecast assumes fires continue at recent levels";
 export const CAPTION_STOP = "forecast assumes fires stop now";
+export const SOLID_LEGEND = "solid = past hours (observed weather and fires)";
+export const DASHED_LEGEND = "dashed = forecast";
 
 export function Timeline() {
   const store = useAppStore();
@@ -50,6 +52,15 @@ export function Timeline() {
         </div>
       </div>
 
+      <div className="speeds" role="radiogroup" aria-label="Speed, simulated hours per second">
+        {SPEEDS.map((sp) => (
+          <label key={sp} className={sp === speed ? "on" : undefined}>
+            <input type="radio" name="speed" value={sp} checked={sp === speed} onChange={() => store.getState().setSpeed(sp)} />
+            {sp}×
+          </label>
+        ))}
+      </div>
+
       <div className="track">
         <div className="rail" />
         <div className="replay" style={{ left: 0, width: ff === null ? "100%" : pos(ff) }} />
@@ -69,17 +80,9 @@ export function Timeline() {
       </div>
 
       <div className="right-block">
-        <div className="speeds" role="radiogroup" aria-label="Speed, simulated hours per second">
-          {SPEEDS.map((s) => (
-            <label key={s} className={s === speed ? "on" : undefined}>
-              <input type="radio" name="speed" value={s} checked={s === speed} onChange={() => store.getState().setSpeed(s)} />
-              {s}×
-            </label>
-          ))}
-        </div>
-        <div className="caption-line">
-          {caption ? <span className="accent">{caption}</span> : <span className="mute">solid = replay of real data</span>}
-        </div>
+        {meta && <div className="caption-line mute">{SOLID_LEGEND}</div>}
+        {ff !== null && <div className="caption-line mute">{DASHED_LEGEND}</div>}
+        {caption && <div className="caption-line accent">{caption}</div>}
       </div>
     </footer>
   );

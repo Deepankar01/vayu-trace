@@ -4,6 +4,7 @@ import { useDropStore } from "./map/dropStore";
 import { CityPanel } from "./panels/CityPanel";
 import { DropSourceDialog } from "./panels/DropSourceDialog";
 import { initialHour } from "./panels/initialHour";
+import { PanelBoundary } from "./panels/PanelBoundary";
 import { useKeyboard } from "./panels/keyboard";
 import { PlumeLegend } from "./panels/PlumeLegend";
 import { RunStatus } from "./panels/RunStatus";
@@ -22,7 +23,7 @@ function runDate(): string {
   return q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : new Date().toISOString().slice(0, 10);
 }
 
-function startRun(date: string) {
+function startRunFor(date: string) {
   const url = new URL(window.location.href);
   url.searchParams.set("date", date);
   window.history.replaceState(null, "", url);
@@ -35,6 +36,14 @@ export default function App() {
   const frameError = useStore((s) => s.frameError);
   const firesError = useStore((s) => s.firesError);
   const ready = useStore((s) => s.status === "ready");
+  // an added-source failure whose dialog is gone (or a failed removal) still has to be seen
+  const sourceError = useStore((s) => s.sourceError);
+  const dialogOpen = useDropStore((d) => d.pending !== null);
+  const [requested, setRequested] = useState(runDate);
+  const startRun = useCallback((date: string) => {
+    setRequested(date);
+    startRunFor(date);
+  }, []);
   useKeyboard(useStore);
 
   // a newly loaded run opens on its date's evening (a refresh of the same date keeps the playhead)
@@ -51,7 +60,7 @@ export default function App() {
 
   useEffect(() => {
     useStore.getState().selectCity(DEFAULT_CITY); // measured / CAMS load once the run is ready
-    startRun(runDate());
+    startRunFor(runDate());
   }, []);
 
   const onProblem = useCallback((key: string, message: string | null) => {
@@ -68,15 +77,16 @@ export default function App() {
     useDropStore.getState().place({ lon, lat, x, y });
   }, []);
 
-  const shownProblems = [frameError, firesError, ...Object.values(problems)].filter(Boolean);
+  const shownProblems = [
+    frameError, firesError, !dialogOpen && sourceError ? `added source: ${sourceError}` : null, ...Object.values(problems),
+  ].filter(Boolean);
 
   return (
     <>
       <MapContainer onDropPoint={onDropPoint} onProblem={onProblem} />
       <div className="app-ui">
-        <TopBar onDate={startRun} />
-        {/* Validation report (Task 16): mounted here, not in TopBar.tsx; may move into the top bar */}
-        <ValidationButton />
+        {/* Validation report (Task 16): their component, placed at the right end of the top bar */}
+        <PanelBoundary name="Top bar"><TopBar date={requested} onDate={startRun} actions={<ValidationButton />} /></PanelBoundary>
         {ready && (
           <>
             <button type="button" className="panel left-toggle" aria-label={leftOpen ? "Hide sources" : "Show sources"}
@@ -86,12 +96,12 @@ export default function App() {
               </svg>
             </button>
             <aside className={`panel side left${leftOpen ? " open" : ""}`} aria-label="Sources">
-              <div className="side-scroll"><SourcesPanel /></div>
+              <div className="side-scroll"><PanelBoundary name="Sources panel"><SourcesPanel /></PanelBoundary></div>
             </aside>
             <aside className="panel side right" aria-label="Selected city">
-              <div className="side-scroll"><CityPanel /></div>
+              <div className="side-scroll"><PanelBoundary name="City panel"><CityPanel /></PanelBoundary></div>
             </aside>
-            <PlumeLegend />
+            <PanelBoundary name="Legend"><PlumeLegend /></PanelBoundary>
           </>
         )}
         {shownProblems.length > 0 && (
@@ -99,9 +109,9 @@ export default function App() {
             {shownProblems.map((m, i) => <div key={i}>{m}</div>)}
           </div>
         )}
-        <Timeline />
-        <RunStatus onRetry={() => startRun(useStore.getState().meta?.date ?? runDate())} />
-        <DropSourceDialog />
+        <PanelBoundary name="Timeline"><Timeline /></PanelBoundary>
+        <RunStatus onRetry={() => startRun(useStore.getState().meta?.date ?? requested)} />
+        <PanelBoundary name="Drop source dialog"><DropSourceDialog /></PanelBoundary>
       </div>
     </>
   );

@@ -6,15 +6,18 @@
 import { useMemo } from "react";
 import { useMapStatus } from "../map/mapStatus";
 import { aqiCategory, aqiColor } from "../lib/colors";
-import { DASH, fmtError, fmtISTHour, fmtNumber, fmtShare } from "../lib/format";
+import { arrival } from "../lib/breakdown";
+import { DASH, fmtError, fmtISTHour, fmtNumber, fmtShare, fmtSharesToWhole } from "../lib/format";
+import { fireSeries } from "../map/layers/cities";
 import { IDLE_CITY_DATA } from "../state/store";
 import { measuredAt, noMeasuredInWindow, cityView } from "./cityView";
 import { ModelChart } from "./ModelChart";
 import { useApp, useAppStore } from "./storeContext";
 import { Dot, cityOf } from "./ui";
 
-export const LOW_EXPLANATION =
-  "The model simulates directly emitted PM2.5 only. Secondary aerosol and inflow from outside India are not simulated, so it usually reads low.";
+export const MODEL_SCOPE_NOTE =
+  "The model simulates directly emitted PM2.5 only. Secondary aerosol and inflow from outside India are not simulated. " +
+  "In the November 2025 validation it read low on average, though individual hours can read high. See Validation.";
 
 export function CityPanel() {
   const store = useAppStore();
@@ -39,12 +42,23 @@ export function CityPanel() {
     [city, weights, h, nHours, m.hourly, labels],
   );
 
+  // smoke status as on the map label: weighted fire PM at or above the 15 ug/m3 threshold
+  const smoke = useMemo(() => {
+    if (!city) return null;
+    try {
+      const fire = fireSeries(city, weights);
+      if (h < 0 || h >= fire.length) return null;
+      return arrival(fire, h, city.fire_age_h[h] ?? null);
+    } catch {
+      return null; // stale weights: the breakdown section reports the problem
+    }
+  }, [city, weights, h]);
+
   if (!meta || !city || !view) return null;
 
   const retry = () => store.getState().selectCity(city.id);
   const uncertainty = (meta.notes.share_uncertainty_pp as Record<string, number>)[city.id] ?? meta.notes.share_uncertainty_pp.default;
   const simAqi = view.simAqi === null ? null : Math.round(view.simAqi);
-  const age = city.fire_age_h[h];
   const err = fmtError(view.simMean, m.mean);
   const noneInWindow = measured.status === "ready" && noMeasuredInWindow(measured.values, measured.stationCount);
 
@@ -75,7 +89,8 @@ export function CityPanel() {
     measuredBody = (
       <>
         <div className="m-aqi num" data-testid="measured-aqi" style={{ color: aqiColor(m.aqi) }}>{Math.round(m.aqi)}</div>
-        {err && <div className="num">model {err}</div>}
+        <div className="caption">PM2.5-based AQI (24 h)</div>
+        {err && <div className="num nowrap">model {err} <span className="mute">(24 h means)</span></div>}
         <div className="mute">{measured.stationCount === 1 ? "1 station" : `${measured.stationCount} stations`}</div>
       </>
     );
@@ -90,6 +105,8 @@ export function CityPanel() {
   else if (measured.status === "error" || noneInWindow) measuredNote = "no data";
 
   const total = view.legend.reduce((a, r) => a + (r.share ?? 0), 0);
+  const shareText = fmtSharesToWhole(view.legend.map((r) => r.share));
+  const hourLabel = fmtISTHour(meta.hours[h]);
 
   return (
     <div className="side-inner">
@@ -117,39 +134,53 @@ export function CityPanel() {
           {measuredBody}
         </div>
       </div>
-      <p className="explain">{LOW_EXPLANATION}</p>
+      <p className="explain">{MODEL_SCOPE_NOTE}</p>
 
       <div className="sep" />
-      <h4>Where it came from</h4>
+      <h4 data-testid="breakdown-title">Where it came from · <span className="nocase">{hourLabel} (this hour)</span></h4>
       {view.problem ? (
         <p className="note warn">{view.problem}</p>
       ) : (
         <>
           <div className="bar" aria-hidden="true">
             {view.legend.map((r) => (
-              <div key={r.key} className={r.kind === "minor" ? "seg minor" : "seg"} style={{ width: `${((r.share ?? 0) / Math.max(1, total)) * 100}%`, background: r.color }} />
+              <div key={r.key} data-testid={`seg-${r.key}`} className={r.kind === "minor" ? "seg minor" : "seg"} style={{ width: `${((r.share ?? 0) / Math.max(1, total)) * 100}%`, background: r.color }} />
             ))}
           </div>
           <ul className="legend" aria-label="Where it came from">
             {view.legend.length === 0 && (
               <li><span className="name mute">No simulated contribution at this hour</span><span className="v num">{fmtShare(null)}</span></li>
             )}
-            {view.legend.map((r) => (
+            {view.legend.map((r, i) => (
               <li key={r.key} className={r.kind === "unexplained" ? "gap" : undefined}>
                 <span className="name"><Dot color={r.color} />{r.label}</span>
                 <span className="v num" data-testid={`share-${r.kind === "minor" ? "minor" : r.kind === "unexplained" ? "unexplained" : r.key}`}>
-                  {fmtShare(r.share)}
+                  {shareText[i]}
                 </span>
               </li>
             ))}
           </ul>
+          {m.hourly !== null && view.simHourly !== null && (
+            <p className="hour-compare num">
+              This hour: model {fmtNumber(view.simHourly)} vs measured {fmtNumber(m.hourly)} µg/m³
+            </p>
+          )}
           {view.incomplete && <p className="flag">incomplete: some source data missing for this hour</p>}
-          <p className="note">Shares are uncertain by about ±{uncertainty} percentage points</p>
+          <p className="note share-note">Shares are uncertain by about ±{uncertainty} percentage points</p>
         </>
       )}
-      {age != null && Number.isFinite(age) && (
+      {smoke?.kind === "arrives" && (
         <p className="smoke">
-          Fire smoke travel time to {city.name}: <b className="num">{Math.round(age)} h</b>
+          Fire smoke expected at {city.name}: <b className="num">arrives +{smoke.in_h} h</b>
+        </p>
+      )}
+      {smoke?.kind === "present" && (
+        <p className="smoke">
+          {smoke.age_h === null ? (
+            <>Fire smoke present at {city.name}</>
+          ) : (
+            <>Fire smoke travel time to {city.name}: <b className="num">{Math.round(smoke.age_h)} h</b></>
+          )}
           {pathHour !== null && (
             <span className="mute">
               {" "}along dotted path{pathHour !== h ? ` · path traced for ${fmtISTHour(meta.hours[pathHour])}` : ""}
@@ -159,7 +190,7 @@ export function CityPanel() {
       )}
 
       <div className="sep" />
-      <h4>Model vs measured · <span className="nocase">PM2.5 µg/m³</span></h4>
+      <h4>Model vs measured · <span className="nocase">hourly PM2.5, µg/m³</span></h4>
       <ModelChart
         hours={meta.hours} sim={view.totals}
         measured={measured.status === "ready" ? measured.values : null}

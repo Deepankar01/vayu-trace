@@ -14,9 +14,14 @@ import { useApp, useAppStore } from "./storeContext";
 import { Dot, Info, Slider, Switch, cityOf } from "./ui";
 
 export const NO_DUST_NOTE = "No baseline dust data — add sites with Drop source";
-export const FIRE_SCALING_TIP =
-  "Satellites miss small and short-lived fires and fires under cloud or smoke. This multiplies all fire " +
-  "emissions by one number for the whole run. Default 1× means no correction.";
+/** The fire-scaling tooltip; the default comes from the run (`notes.fire_scaling_default`). */
+export function fireScalingTip(def: number): string {
+  const n = Number(def.toFixed(2));
+  return (
+    "Satellites miss small and short-lived fires and fires under cloud or smoke. This multiplies all fire " +
+    `emissions by one number for the whole run. ${n === 1 ? "Default 1× means no correction." : `Default ${n}×.`}`
+  );
+}
 
 const SECTORS: { sector: Sector; label: string; color: string; note?: string }[] = [
   { sector: "vehicles", label: "Vehicles", color: TAG_COLORS.vehicles, note: "Includes road-dust resuspension reported with road transport in the inventory" },
@@ -66,12 +71,16 @@ export function SourcesPanel() {
       <h4>Sources</h4>
       <div className="row">
         <span className="name"><Dot color={TAG_COLORS.fires} />Fires (satellite)</span>
-        <span className="mute small">observed</span>
+        <span className="mute small fires-status">
+          {meta?.fires_assumed_from != null
+            ? `observed; assumed after ${fmtISTShort(meta.hours[meta.fires_assumed_from])} IST`
+            : "observed"}
+        </span>
       </div>
       <div className="row sub">
         <span className="name mute">
           Fire scaling
-          <Info label="About fire scaling">{FIRE_SCALING_TIP}</Info>
+          <Info label="About fire scaling">{fireScalingTip(fireDefault)}</Info>
         </span>
         <span className="num value">{fireScaling.toFixed(1)}×</span>
       </div>
@@ -136,6 +145,10 @@ export function SourcesPanel() {
           <h4 className="h4-sub">Added sources</h4>
           {users.map((u, i) => (
             <div key={u.id} className="user-source">
+              <button
+                type="button" className="remove-source" aria-label={`Remove ${i + 1}. ${u.label}`}
+                title="Remove this source" onClick={() => void s().removeSource(u.id)}
+              >×</button>
               <Switch label={`${i + 1}. ${u.label}`} checked={u.enabled} onChange={() => s().toggleUserSource(u.id)}>
                 <span className="switch-label user-label"><Dot color={u.color} muted={!u.enabled} /><span>{i + 1}. {u.label}</span></span>
               </Switch>
@@ -150,7 +163,7 @@ export function SourcesPanel() {
       )}
 
       <button
-        type="button" className={`btn dashed${armed ? " armed" : ""}`} disabled={atCap}
+        type="button" className={`btn dashed${armed ? " armed" : ""}`} disabled={atCap} data-drop-button
         aria-pressed={armed}
         onClick={() => (armed ? useDropStore.getState().disarm() : useDropStore.getState().arm())}
       >
