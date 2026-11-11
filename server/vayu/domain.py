@@ -73,12 +73,25 @@ TAGS: tuple[Tag, ...] = _build_tags()
 
 
 def cell_index(lon, lat) -> tuple[np.ndarray, np.ndarray]:
-    """(ix, iy) of the cell containing each point; -1 where outside the grid."""
+    """(ix, iy) of the cell containing each point.
+
+    -1 marks a point outside the grid (or NaN) and is set per axis, so one index can be valid
+    while the other is -1. Mask with `inside(ix, iy)` before indexing `[iy, ix]`; a raw -1
+    would silently wrap to the last row/column.
+    """
     lon = np.asarray(lon, dtype=float)
     lat = np.asarray(lat, dtype=float)
-    ix = np.floor((lon - LON_MIN) / CELL + 1e-9).astype(int)
-    iy = np.floor((lat - LAT_MIN) / CELL + 1e-9).astype(int)
-    return np.where((ix < 0) | (ix >= NX), -1, ix), np.where((iy < 0) | (iy >= NY), -1, iy)
+    out = []
+    for v, v0, n in ((lon, LON_MIN, NX), (lat, LAT_MIN, NY)):
+        finite = np.isfinite(v)
+        i = np.floor((np.where(finite, v, 0.0) - v0) / CELL + 1e-9).astype(int)
+        out.append(np.where(finite & (i >= 0) & (i < n), i, -1))
+    return out[0], out[1]
+
+
+def inside(ix, iy) -> np.ndarray:
+    """True where both indices from `cell_index` are valid (>= 0)."""
+    return (np.asarray(ix) >= 0) & (np.asarray(iy) >= 0)
 
 
 def cell_center(ix, iy) -> tuple[np.ndarray, np.ndarray]:
@@ -109,6 +122,9 @@ def _state_masks() -> dict[str, np.ndarray]:
         geom = shape(feat["geometry"])
         prepare(geom)
         masks[key] = contains_xy(geom, lon, lat)
+    missing = sorted(name for name, key in _STATE_NAMES.items() if key not in masks)
+    if missing:
+        raise ValueError(f"{_GEOJSON.name} has no feature for state(s): {', '.join(missing)}")
     return masks
 
 

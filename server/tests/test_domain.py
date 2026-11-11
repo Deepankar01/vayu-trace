@@ -1,3 +1,6 @@
+import json
+import warnings
+
 import numpy as np
 
 from vayu.domain import (
@@ -100,3 +103,27 @@ def test_chennai_is_rest():
 
 def test_ocean_is_rest():
     assert region_at(70.0, 10.0) == "rest_of_india"
+
+
+def test_inside_masks_per_axis_outside():
+    from vayu.domain import inside
+
+    ix, iy = cell_index(np.array([77.21, 65.0, 77.21]), np.array([28.61, 28.61, 50.0]))
+    assert list(ix) == [112, -1, 112] and list(iy) == [226, 226, -1]
+    assert list(inside(ix, iy)) == [True, False, False]
+
+
+def test_cell_index_nan_is_outside_without_warning():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ix, iy = cell_index(np.array([np.nan, 77.21, np.inf]), np.array([28.61, np.nan, 28.61]))
+    assert list(ix) == [-1, 112, -1] and list(iy) == [226, -1, 226]
+
+
+def test_geojson_has_all_required_states():
+    from vayu.domain import _GEOJSON, _STATE_NAMES
+
+    names = {f["properties"]["name"] for f in json.loads(_GEOJSON.read_text())["features"]}
+    assert set(_STATE_NAMES) <= names
+    assert set(_STATE_NAMES.values()) == {"punjab", "haryana", "uttar_pradesh", "bihar", "madhya_pradesh"}
+    assert set(FIRE_STATES[:-1]) <= set(_STATE_NAMES.values())
