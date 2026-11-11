@@ -1,0 +1,55 @@
+:root {
+  --bg: #0b0e13;
+  --panel: rgba(17, 21, 29, 0.82);
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #e8eaf0;
+  --mute: #8b93a5;
+  --accent: #ff8a3d;
+  --fire: #ff5a2b;
+  --good: #5fd38d;
+  --cams: #6aa8ff;
+  --font: -apple-system, "Inter", "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 var(--font);
+  overflow: hidden;
+}
+
+.panel {
+  background: var(--panel);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.num,
+[data-num] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* MapLibre attribution: keep visible but quiet, matching the panel treatment */
+.maplibregl-ctrl-attrib {
+  background: var(--panel) !important;
+  color: var(--mute) !important;
+  border-radius: 8px;
+  font-size: 10px;
+}
+.maplibregl-ctrl-attrib a {
+  color: var(--mute) !important;
+}
