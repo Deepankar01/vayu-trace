@@ -128,7 +128,9 @@ export function CityPanel() {
             <div className="sev mute">needs 16 h of data</div>
           ) : (
             <div className="sev num" data-testid="sim-category" style={{ color: aqiColor(simAqi) }}>
-              {aqiCategory(simAqi)} · PM2.5 {fmtNumber(view.simMean)} µg/m³ (24 h mean)
+              {aqiCategory(simAqi)} ·{" "}
+              <span className="nb">PM2.5 {fmtNumber(view.simMean)} µg/m³</span>{" "}
+              <span className="nb">(24 h mean)</span>
             </div>
           )}
           <div className="caption num" data-testid="sim-hourly">this hour: {fmtNumber(view.simHourly)} µg/m³</div>
@@ -145,7 +147,10 @@ export function CityPanel() {
       <p className="explain">{MODEL_SCOPE_NOTE}</p>
 
       <div className="sep" />
-      <h4 data-testid="breakdown-title">Where it came from · <span className="nocase">{hourLabel} (this hour)</span> <HourTag /></h4>
+      <h4 className="h4-tagged" data-testid="breakdown-title">
+        <span className="h4-text">Where it came from · <span className="nocase">{hourLabel} (this hour)</span></span>
+        <HourTag />
+      </h4>
       {view.problem ? (
         <p className="note warn">{view.problem}</p>
       ) : (

@@ -40,7 +40,9 @@ describe("CityPanel", () => {
     setup(sim100, null);
     // pm25ToAqi(100) = 233.3
     expect(screen.getByTestId("sim-aqi")).toHaveTextContent("233");
-    expect(screen.getByText(/Poor · PM2\.5 100 µg\/m³/)).toBeInTheDocument();
+    expect(screen.getByTestId("sim-category")).toHaveTextContent(/Poor · PM2\.5 100 µg\/m³/);
+    // number and unit stay together on one line
+    expect(screen.getByText(/PM2\.5 100 µg\/m³/)).toHaveClass("nb");
     expect(screen.getByText("PM2.5-based AQI (24 h)")).toBeInTheDocument();
   });
 

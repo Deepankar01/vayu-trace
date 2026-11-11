@@ -8,7 +8,8 @@ describe("RunStatus", () => {
     renderPanel(<RunStatus onRetry={() => {}} />, { status: "running", stage: "simulating", progress: 0.42, meta: null });
     expect(screen.getByText("simulating")).toBeInTheDocument();
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "42");
-    expect(screen.getByText(/about a minute/)).toBeInTheDocument();
+    expect(screen.getByText(/one to a few minutes\. Recent dates are refreshed when reopened after an hour; older dates open at once\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Later visits are instant/)).toBeNull();
   });
   it("shows the server's error text with Retry", () => {
     const onRetry = vi.fn();

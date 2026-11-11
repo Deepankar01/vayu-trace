@@ -24,7 +24,7 @@ export function RunStatus({ onRetry }: { onRetry: () => void }) {
             <i style={{ width: `${pct}%` }} />
           </div>
           <div className="mute small num">
-            {pct}% · the first run for a date fetches weather and fires and simulates them: about a minute. Later visits are instant.
+            {pct}% · The first run for a date fetches weather and fires and simulates them: one to a few minutes. Recent dates are refreshed when reopened after an hour; older dates open at once.
           </div>
         </div>
       )}

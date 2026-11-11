@@ -31,6 +31,17 @@ h4 {
   margin-top: 12px;
   margin-bottom: 4px;
 }
+.h4-tagged {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+.h4-tagged .hour-tag {
+  margin-left: 0;
+}
+.h4-text,
+.nb {
+  white-space: nowrap;
+}
 .nocase {
   text-transform: none;
   letter-spacing: 0.02em;
@@ -182,6 +193,28 @@ button:disabled {
 .readouts {
   display: flex;
   gap: 8px;
+  /* One row only: when the bar is too narrow (e.g. with the forecast pill by the clock) the
+     last readouts wrap onto a hidden second row instead of pushing the Validation chip off. */
+  flex: 0 1 auto;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-content: flex-start;
+  height: 28px;
+  overflow: hidden;
+}
+.readouts .chip {
+  height: 28px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 0.3em; /* the space between label and value collapses inside a flex box */
+}
+.top > .chip,
+.top > .chip-group,
+.top > .brand,
+.top > .vd-launch {
+  flex: none;
 }
 
 /* --- side panels --- */
