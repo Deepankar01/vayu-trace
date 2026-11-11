@@ -25,7 +25,7 @@ describe("ApiClient URLs", () => {
     const { client, urls } = setup([
       json({ run_id: "2026-11-10" }, 202), json({ status: "running", progress: 0, stage: "", error: null }),
       json({}), new Response(frameBytes(1, 1, { __haze: { scale: 1, codes: [1] } })), json([]), json({}),
-      json([]), json({ values: [] }), json({ values: [] }), json({}),
+      json([]), json({ values: [] }), json({ values: [] }), json({}), json({ removed: "user_1", build_id: "b1" }),
     ]);
     await client.postRun("2026-11-10");
     await client.getRunStatus("2026-11-10");
@@ -37,6 +37,7 @@ describe("ApiClient URLs", () => {
     await client.getMeasured("2026-11-10", "delhi");
     await client.getCams("2026-11-10", "delhi");
     await client.postSource("2026-11-10", { kind: "k", lon: 1, lat: 2, amount: 3, start_hour: 0, duration_h: 1 });
+    await client.deleteSource("2026-11-10", "user_1");
     expect(urls).toEqual([
       "/api/runs",
       "/api/runs/2026-11-10",
@@ -48,7 +49,16 @@ describe("ApiClient URLs", () => {
       "/api/runs/2026-11-10/cities/delhi/measured?build=b1",
       "/api/runs/2026-11-10/cities/delhi/cams?build=b1",
       "/api/runs/2026-11-10/sources?build=b1",
+      "/api/runs/2026-11-10/sources/user_1?build=b1",
     ]);
+  });
+
+  it("removes an added source with DELETE", async () => {
+    const { client, fetchMock } = setup([json({ removed: "user_2", build_id: "b1" })]);
+    expect(await client.deleteSource("2026-11-10", "user_2")).toEqual({ removed: "user_2", build_id: "b1" });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("/api/runs/2026-11-10/sources/user_2?build=b1");
+    expect(init.method).toBe("DELETE");
   });
 
   it("decodes a frame body", async () => {

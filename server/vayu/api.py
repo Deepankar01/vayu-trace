@@ -8,7 +8,8 @@ so the browser never mixes two builds.
 Builds run in a background thread, one at a time. A build is `run_date` followed by the
 per-build extras (per-city series and the fire list), written beside the immutable run directory
 in `runs/{date}/{run_id}.extras/`, which `run.py`'s cleanup removes together with the run once it
-is superseded. User-dropped sources are simulated on request into the same extras directory.
+is superseded. User-dropped sources are simulated on request into the same extras directory and
+can be removed again (DELETE); a removed source's id is retired for that build, never reused.
 
 The API serves per-tag fields and never applies source weights. JSON never contains NaN
 (missing values are null), and no response body or log line contains an API key.
@@ -447,10 +448,33 @@ def _reserve_user_tag(b: _Build) -> str:
         taken = set(_user_sources(b)) | b._reserved
         if len(taken) >= MAX_USER_SOURCES:
             raise HTTPException(422, f"at most {MAX_USER_SOURCES} added sources per run")
-        n = next(i for i in range(1, MAX_USER_SOURCES + 1) if f"user_{i}" not in taken)
+        retired = _retired_user_tags(b)
+        n = next(i for i in range(1, 2 * MAX_USER_SOURCES + len(retired) + 1)
+                 if f"user_{i}" not in taken and f"user_{i}" not in retired)
         tag = f"user_{n}"
         b._reserved.add(tag)
         return tag
+
+
+def _retired_user_tags(b: _Build) -> set[str]:
+    """Ids of removed sources. They are never reused within a build: frame URLs carrying
+    `?build=...&extra=user_N` may be held in the browser's HTTP cache."""
+    if not b.extras_dir.is_dir():
+        return set()
+    return {p.name.removesuffix(".removed") for p in b.extras_dir.glob("user_*.removed")}
+
+
+def _remove_source(b: _Build, tag: str) -> None:
+    """Forget a dropped source: its files, its in-memory entry, and a marker retiring the id."""
+    with b.lock:
+        if not _USER.fullmatch(tag) or tag not in _user_sources(b):
+            raise HTTPException(404, f"unknown user source {tag!r} for build {b.run.run_id}")
+        _require_run_dir(b.run)
+        (b.extras_dir / f"{tag}.removed").touch()
+        (b.extras_dir / f"{tag}.json").unlink(missing_ok=True)
+        shutil.rmtree(b.extras_dir / tag, ignore_errors=True)
+        b._users.pop(tag, None)
+        b._user_runs.pop(tag, None)
 
 
 def _missing(path: Path) -> FileNotFoundError:
@@ -753,6 +777,14 @@ def post_source(run_id: str, body: SourceRequest, build: str | None = None):
     b = _resolve(run_id, build)
     with _build_files(b):
         return _json(_add_source(b, body, _now()))
+
+
+@app.delete("/api/runs/{run_id}/sources/{tag}")
+def delete_source(run_id: str, tag: str, build: str | None = None):
+    b = _resolve(run_id, build)
+    with _build_files(b):
+        _remove_source(b, tag)
+    return _json({"removed": tag, "build_id": b.run.run_id})
 
 
 @app.get("/api/validation")

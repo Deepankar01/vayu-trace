@@ -825,3 +825,55 @@ def test_no_key_in_any_response(env, monkeypatch, caplog):
             assert value.encode() not in body
     for value in KEYS.values():
         assert value not in caplog.text
+
+
+# --- removing a dropped source ---
+
+def test_delete_source_removes_files_and_entry(env):
+    c = ready(env)
+    c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    c.post("/api/runs/2023-11-05/sources", json={**SOURCE, "lon": 80.0})
+    extras = env["fake"].out_dir.parent / f"{env['fake'].run_id}.extras"
+    assert (extras / "user_1.json").is_file() and (extras / "user_1").is_dir()
+    r = c.delete(f"/api/runs/2023-11-05/sources/user_1?build={env['fake'].run_id}")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"removed": "user_1", "build_id": env["fake"].run_id}
+    assert not (extras / "user_1.json").exists() and not (extras / "user_1").exists()
+    m = c.get("/api/runs/2023-11-05/meta").json()
+    assert [t["id"] for t in m["tags"] if t["kind"] == "user"] == ["user_2"]
+    assert all("user_1" not in x["by_tag"] for x in m["cities"])
+    assert c.get("/api/runs/2023-11-05/frames/1?extra=user_1").status_code == 404
+    assert c.get("/api/runs/2023-11-05/frames/1?extra=user_2").status_code == 200
+
+
+def test_deleted_source_id_is_not_reused_and_frees_a_slot(env):
+    c = ready(env)
+    for _ in range(5):
+        c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    assert c.delete("/api/runs/2023-11-05/sources/user_2").status_code == 200
+    api._S.builds.clear()  # survives a restart: the retirement is on disk
+    r = c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    assert r.status_code == 200 and r.json()["tag"]["id"] == "user_6"
+    assert c.post("/api/runs/2023-11-05/sources", json=SOURCE).status_code == 422
+
+
+@pytest.mark.parametrize("tag", ["user_1", "user_9", "vehicles_delhi_ncr", "user_x"])
+def test_delete_unknown_source_404(env, tag):
+    c = ready(env)
+    if tag != "user_1":
+        c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+        c.delete("/api/runs/2023-11-05/sources/user_1")
+    assert c.delete(f"/api/runs/2023-11-05/sources/{tag}").status_code == 404
+
+
+def test_delete_source_build_mismatch_409(env):
+    c = ready(env)
+    c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    r = c.delete("/api/runs/2023-11-05/sources/user_1?build=20200101T000000Z-bbbbbbbb")
+    assert r.status_code == 409
+    assert r.json() == {"detail": "run was rebuilt", "build_id": env["fake"].run_id}
+    extras = env["fake"].out_dir.parent / f"{env['fake'].run_id}.extras"
+    assert (extras / "user_1.json").is_file()  # nothing removed
+    env["run"] = None
+    r = c.delete(f"/api/runs/2023-11-05/sources/user_1?build={env['fake'].run_id}")
+    assert r.status_code == 409 and r.json()["build_id"] is None

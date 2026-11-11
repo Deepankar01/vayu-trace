@@ -422,6 +422,47 @@ describe("added sources", () => {
     expect(h.calls).toHaveLength(n);
   });
 
+  it("removeSource deletes on the server and drops the tag from meta, cities, weights and frames", async () => {
+    const del = (u: string, init?: RequestInit) =>
+      init?.method === "DELETE" && u.startsWith(`${RUN}/sources/user_1`) ? json({ removed: "user_1", build_id: "b1" }) : withSource(u);
+    const h = harness(readyServer(() => makeMeta({ hours: 4 }), (u, init) => del(u, init)));
+    await h.get().startRun("2026-11-10");
+    await h.get().addSource(req);
+    await vi.advanceTimersByTimeAsync(200);
+    const n = h.calls.length;
+    await h.get().removeSource("user_1");
+    expect(h.calls).toContain(`DELETE ${RUN}/sources/user_1?build=b1`);
+    expect(h.get().userSources).toEqual([]);
+    expect(h.get().meta!.tags.some((t) => t.id === "user_1")).toBe(false);
+    expect(h.get().meta!.cities.find((c) => c.id === "delhi")!.by_tag.user_1).toBeUndefined();
+    expect(h.get().weights().user_1).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(200);
+    const refetched = h.calls.slice(n).filter((c) => c.includes("/frames/"));
+    expect(refetched.length).toBeGreaterThan(0);
+    expect(refetched.every((c) => !c.includes("extra="))).toBe(true);
+    expect(h.get().sourceError).toBeNull();
+  });
+
+  it("removeSource keeps the source and reports the error when the server refuses", async () => {
+    const h = harness(readyServer(() => makeMeta({ hours: 4 }), (u, init) =>
+      init?.method === "DELETE" ? json({ detail: "boom" }, 500) : withSource(u)));
+    await h.get().startRun("2026-11-10");
+    await h.get().addSource(req);
+    await h.get().removeSource("user_1");
+    expect(h.get().sourceError).toBe("boom");
+    expect(h.get().userSources.map((u) => u.id)).toEqual(["user_1"]);
+  });
+
+  it("removeSource drops a source the server no longer knows (404)", async () => {
+    const h = harness(readyServer(() => makeMeta({ hours: 4 }), (u, init) =>
+      init?.method === "DELETE" ? json({ detail: "unknown user source" }, 404) : withSource(u)));
+    await h.get().startRun("2026-11-10");
+    await h.get().addSource(req);
+    await h.get().removeSource("user_1");
+    expect(h.get().userSources).toEqual([]);
+    expect(h.get().sourceError).toBeNull();
+  });
+
   it("reports a rejected source as sourceError without touching the run", async () => {
     const h = harness(readyServer(() => makeMeta(), (u) => (u.startsWith(`${RUN}/sources`) ? json({ detail: "at most 5 added sources per run" }, 422) : undefined)));
     await h.get().startRun("2026-11-10");

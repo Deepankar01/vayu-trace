@@ -1,7 +1,8 @@
 /**
  * Typed HTTP client for server/vayu/api.py.
  *
- * Build rule: every run-derived request (frames, wind, fires, path, cams, measured, sources)
+ * Build rule: every run-derived request (frames, wind, fires, path, cams, measured, sources,
+ * source removal)
  * carries `?build={current build id}`. When the server answers 409 ("run was rebuilt", with the
  * new `build_id`; or "run expired", `build_id` null) the client calls `onRebuilt` ONCE (the store drops its cached frames and refetches meta there, so the next
  * `getBuild()` returns the new id) and then repeats the request a single time. This is the only
@@ -36,7 +37,7 @@ export interface ClientOptions {
 }
 
 interface Req {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
   /** Send ?build= and handle 409 (default true). */
@@ -152,6 +153,11 @@ export class ApiClient {
 
   postSource(runId: string, source: SourceRequest, signal?: AbortSignal): Promise<SourceResponse> {
     return this.json(`${this.run(runId)}/sources`, { method: "POST", body: source, signal });
+  }
+
+  /** DELETE an added source (404 if the server does not know it). */
+  deleteSource(runId: string, tagId: string, signal?: AbortSignal): Promise<{ removed: string; build_id: string }> {
+    return this.json(`${this.run(runId)}/sources/${encodeURIComponent(tagId)}`, { method: "DELETE", signal });
   }
 }
 

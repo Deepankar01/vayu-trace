@@ -143,6 +143,8 @@ export function SourcesPanel() {
                 {u.spec && meta
                   ? `${fmtISTShort(meta.hours[u.spec.start_hour])} IST · ${u.spec.duration_h} h · ${u.spec.lat.toFixed(2)}° N, ${u.spec.lon.toFixed(2)}° E`
                   : "added earlier to this run"}
+                {" "}
+                <button type="button" className="reset-one" aria-label={`Remove ${i + 1}. ${u.label}`} title="Remove this source" onClick={() => void s().removeSource(u.id)}>×</button>
               </p>
             </div>
           ))}

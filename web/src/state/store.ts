@@ -105,6 +105,8 @@ export interface AppState {
   setCompareBaseline: (on: boolean) => void;
   toggleUserSource: (id: string) => void;
   addSource: (req: SourceRequest) => Promise<void>;
+  /** Remove an added source on the server, then from meta, city series and the frame cache. */
+  removeSource: (id: string) => Promise<void>;
   /** Sliders, fire scaling, fires-continue and the Delhi scenarios back to the baseline values.
    *  Added sources and their on/off state are left alone. */
   resetScenario: () => void;
@@ -457,6 +459,39 @@ export function createAppStore(deps: StoreDeps = {}) {
         } catch (e) {
           if (!isAbort(e)) set({ sourceError: errorMessage(e) });
         }
+      },
+
+      removeSource: async (id) => {
+        const runId = get().runId;
+        const token = runToken;
+        if (!runId) return;
+        set({ sourceError: null });
+        try {
+          await client.deleteSource(runId, id);
+        } catch (e) {
+          // 404: the server no longer has it, so dropping it here is still right
+          if (!(e instanceof ApiError && e.status === 404)) {
+            if (!isAbort(e)) set({ sourceError: errorMessage(e) });
+            return;
+          }
+        }
+        if (stale(token)) return;
+        const meta = get().meta;
+        if (!meta) return;
+        // cached frames carry the tag, which would have no weight once meta drops it
+        frames.clear();
+        const cities = meta.cities.map((c) => {
+          if (!(id in c.by_tag)) return c;
+          const { [id]: _gone, ...rest } = c.by_tag;
+          void _gone;
+          return { ...c, by_tag: rest };
+        });
+        set((s) => ({
+          meta: { ...meta, cities, tags: meta.tags.filter((t) => t.id !== id) },
+          userSources: s.userSources.filter((u) => u.id !== id),
+        }));
+        frames.setExtras(enabledUserTags());
+        frames.refresh();
       },
 
       selectCity: (id) => {
