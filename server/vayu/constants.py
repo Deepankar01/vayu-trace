@@ -126,3 +126,9 @@ HAZE_RH_CAP = 0.95
 # roughly 10-25 km (one to two 0.1 degree cells).
 KERNEL_AGE_H = (6, 24)
 KERNEL_HALF_WIDTH = (0, 1, 2)
+
+# --- City outputs (vayu.receptors) ---
+
+# Total fire-attributed PM2.5 (µg/m³) at a city above which "smoke has arrived" is shown. A display
+# threshold chosen for the demo (one value for all cities), not a physical constant and not fitted.
+FIRE_ARRIVAL_UGM3 = 15.0
