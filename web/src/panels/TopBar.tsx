@@ -157,9 +157,11 @@ export function TopBar({ date: requested, onDate, actions }: TopBarProps) {
       <div className="spacer" />
       <div className="readouts" aria-label={city ? `Weather at ${city.name}` : "Weather"}>
         <Readout id="ro-wind" label="Wind" value={wind} />
+        {/* Order matters: when the bar is too narrow the LAST readouts are dropped, so the
+            ones that drive the physics (wind, mixing height) come first. */}
+        <Readout id="ro-blh" label="Mixing height" value={blh === null ? DASH : `${Math.round(blh)} m${est}`} />
         <Readout id="ro-rh" label="Humidity" value={rh === null ? DASH : `${Math.round(rh * 100)}%`} />
         <Readout id="ro-temp" label="Temp" value={temp === null ? DASH : `${Math.round(temp)}°C`} />
-        <Readout id="ro-blh" label="Mixing height" value={blh === null ? DASH : `${Math.round(blh)} m${est}`} />
       </div>
       {actions}
     </header>

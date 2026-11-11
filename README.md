@@ -8,11 +8,11 @@ It is a demonstration for atmospheric researchers. The simulated values are alwa
 
 Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12 is installed by uv), Node with npm (developed with Node 26 and npm 11), and `make`.
 
-1. Put two API keys (and optionally a third) in a file named `.env` at the repository root (variable names below; the values are your own and are never sent to the browser):
+1. Put two API keys (and optionally a third) in a file named `.env` at the repository root (copy `.env.example` to `.env` and fill it in; variable names below; the values are your own and are never sent to the browser):
    - `FIRMS_MAP_KEY`: NASA FIRMS map key (fire detections)
    - `OPENAQ_API_KEY`: OpenAQ v3 key (CPCB measurements)
    - `DATA_GOV_IN_API_KEY`: data.gov.in key (live CPCB feed; optional, the app does not use the live feed, see Data sources)
-2. `make setup`: installs the Python and web dependencies and downloads the EDGAR emission inventory (nine zip files of a few MB each) if it is not there yet.
+2. `make setup`: installs the Python and web dependencies and downloads the EDGAR emission inventory (nine files, about 220 MB in total once extracted, each checked against a SHA-256 digest) if it is not there yet.
 3. `make dev`: starts the API (port 8000) and the web app (port 5173) together and prints the address. Ctrl-C stops both. Other ports: `make dev API_PORT=8010 WEB_PORT=5183`.
 4. Open http://localhost:5173. The first run of a date takes one to a few minutes (about a minute when the upstream data is already cached; weather download and simulation, with a progress bar); after that the stored run is reused while it is valid: a run is reused if it was final when it was made (it was simulated at least 10 days after its window ended, which in practice means the date was about 13 days old or more at the time: the window ends 3 days after the date and upstream data is treated as final 10 days later) or if it is less than an hour old; otherwise opening the date simulates it again (about a minute). Stored runs are also discarded and re-simulated on next open whenever the model settings they were made with differ from the current ones (any model constant, the city list, or the receptor logic version). Pick another date with `?date=YYYY-MM-DD` or the date field.
 
