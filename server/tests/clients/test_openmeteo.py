@@ -1,4 +1,6 @@
 import json
+import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -16,10 +18,13 @@ FORECAST = "https://api.open-meteo.com/v1/forecast"
 CAMS = "https://air-quality-api.open-meteo.com/v1/air-quality"
 NOW = datetime(2026, 11, 11, 6, tzinfo=UTC)
 VARS = openmeteo.HOURLY_VARIABLES
+REAL_TIME = time.time
+NULLS = None  # variable the fake nulls out; set per test via monkeypatch
 
 
 def fake_response(request: httpx.Request) -> httpx.Response:
-    """Synthetic Open-Meteo reply: temperature encodes the endpoint (1 archive, 2 forecast)."""
+    """Synthetic Open-Meteo reply: wind_speed_10m encodes the endpoint (1 archive, 2 forecast),
+    temperature_2m encodes the point as lat * 100 + lon."""
     q = request.url.params
     n = len(q["latitude"].split(","))
     if "archive" in str(request.url):
@@ -36,10 +41,18 @@ def fake_response(request: httpx.Request) -> httpx.Response:
     while t <= t1:
         times.append(t.strftime("%Y-%m-%dT%H:%M"))
         t += timedelta(hours=1)
-    hourly = {"time": times}
-    for name in VARS:
-        hourly[name] = [code if name == "temperature_2m" else 5.0] * len(times)
-    body = [{"hourly": hourly} for _ in range(n)]
+    lats = [float(v) for v in q["latitude"].split(",")]
+    lons = [float(v) for v in q["longitude"].split(",")]
+    body = []
+    for lat, lon in zip(lats, lons, strict=True):
+        hourly = {"time": times}
+        for name in VARS:
+            hourly[name] = [5.0] * len(times)
+        hourly["wind_speed_10m"] = [code] * len(times)  # which endpoint answered
+        hourly["temperature_2m"] = [lat * 100 + lon] * len(times)  # which point this is
+        if NULLS:
+            hourly[NULLS] = [None] * len(times)
+        body.append({"hourly": hourly})
     return httpx.Response(200, json=body if n > 1 else body[0])
 
 
@@ -89,8 +102,8 @@ def test_archive_vs_forecast_split(mock):
     # cutoff is NOW - 5 days = 2026-11-06T06:00; hours 0..5 are archive, the rest forecast
     start = datetime(2026, 11, 6, tzinfo=UTC)
     raw = openmeteo.fetch_met(start, 12, NOW)
-    temp = raw.variables["temperature_2m"][:, 0, 0]
-    assert list(temp) == [1.0] * 6 + [2.0] * 6
+    code = raw.variables["wind_speed_10m"][:, 0, 0]
+    assert list(code) == [1.0] * 6 + [2.0] * 6
     hosts = {str(c.request.url).split("?")[0] for c in mock.calls}
     assert hosts == {ARCHIVE, FORECAST}
     fc = next(c.request.url.params for c in mock.calls if FORECAST in str(c.request.url))
@@ -103,16 +116,85 @@ def test_all_archive_makes_no_forecast_call(mock):
     assert {str(c.request.url).split("?")[0] for c in mock.calls} == {ARCHIVE}
 
 
-def test_archive_batches_cached_forecast_ttl(mock, monkeypatch):
-    seen = []
-    real = openmeteo.cached_bytes
-    monkeypatch.setattr(openmeteo, "cached_bytes",
-                        lambda ns, key, fetch, ttl_s=None: seen.append(ttl_s) or real(ns, key, fetch, ttl_s))
-    openmeteo.fetch_met(datetime(2026, 11, 6, tzinfo=UTC), 12, NOW)
-    assert None in seen and 3600 in seen
+def test_reply_to_lattice_mapping(mock):
+    raw = openmeteo.fetch_met(datetime(2023, 11, 5, tzinfo=UTC), 2, NOW)
+    temp = raw.variables["temperature_2m"]
+    # flat index = lat_i * 33 + lon_j; 49 and 50 straddle the first batch seam
+    for flat in (0, 1, 32, 33, 49, 50, 51, 1088):
+        lat_i, lon_j = divmod(flat, 33)
+        assert temp[0, lat_i, lon_j] == (6 + lat_i) * 100 + (66 + lon_j), flat
+        assert temp[1, lat_i, lon_j] == temp[0, lat_i, lon_j]
+    assert np.isfinite(temp).all()
+
+
+def old_start():
+    return datetime(2023, 11, 5, tzinfo=UTC)
+
+
+def cache_names(tmp_path):
+    return {p.name for p in (tmp_path / "cache" / "openmeteo").iterdir()}
+
+
+def test_old_complete_archive_is_cached_for_good(mock, tmp_path):
+    openmeteo.fetch_met(old_start(), 24, NOW)
     n = len(mock.calls)
-    openmeteo.fetch_met(datetime(2026, 11, 6, tzinfo=UTC), 12, NOW)
-    assert len(mock.calls) == n  # second run served from cache
+    # a much later "now" is past any TTL; an immutable entry is still served from disk
+    openmeteo.fetch_met(old_start(), 24, NOW + timedelta(days=30))
+    assert len(mock.calls) == n
+
+
+def test_archive_with_nulls_is_provisional(mock, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "NULLS", "temperature_2m")
+    openmeteo.fetch_met(old_start(), 24, NOW)
+    n = len(mock.calls)
+    openmeteo.fetch_met(old_start(), 24, NOW)
+    assert len(mock.calls) == n  # within the 6 h TTL it is still served from cache
+    # after the TTL it is fetched again (and a final entry was never written)
+    monkeypatch.setattr(time, "time", lambda: REAL_TIME() + 7 * 3600)
+    openmeteo.fetch_met(old_start(), 24, NOW)
+    assert len(mock.calls) == 2 * n
+
+
+def test_null_blh_alone_does_not_block_final(mock, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "NULLS", "boundary_layer_height")
+    openmeteo.fetch_met(old_start(), 24, NOW)
+    n = len(mock.calls)
+    monkeypatch.setattr(time, "time", lambda: REAL_TIME() + 30 * 86400)
+    openmeteo.fetch_met(old_start(), 24, NOW)
+    assert len(mock.calls) == n
+
+
+def test_recent_archive_day_is_provisional(mock, monkeypatch):
+    # last archive day (2026-11-05) is only 6 days before NOW: not final even with no nulls
+    openmeteo.fetch_met(datetime(2026, 11, 5, tzinfo=UTC), 6, NOW)
+    n = len(mock.calls)
+    monkeypatch.setattr(time, "time", lambda: REAL_TIME() + 7 * 3600)
+    openmeteo.fetch_met(datetime(2026, 11, 5, tzinfo=UTC), 6, NOW)
+    assert len(mock.calls) == 2 * n
+
+
+def test_final_and_provisional_do_not_share_a_key(mock, monkeypatch):
+    # same request, once as provisional (recent now) and once as final (late now)
+    openmeteo.fetch_met(datetime(2026, 11, 3, tzinfo=UTC), 6, NOW)
+    n = len(mock.calls)
+    # the 6 h TTL has passed; an immutable read of the provisional entry would skip the fetch
+    monkeypatch.setattr(time, "time", lambda: REAL_TIME() + 7 * 3600)
+    openmeteo.fetch_met(datetime(2026, 11, 3, tzinfo=UTC), 6, NOW + timedelta(days=30))
+    assert len(mock.calls) == 2 * n  # refetched, and now stored as final
+    monkeypatch.setattr(time, "time", lambda: REAL_TIME() + 90 * 86400)
+    openmeteo.fetch_met(datetime(2026, 11, 3, tzinfo=UTC), 6, NOW + timedelta(days=30))
+    assert len(mock.calls) == 2 * n
+
+
+def test_forecast_batches_have_one_hour_ttl(mock, monkeypatch):
+    start = datetime(2026, 11, 8, tzinfo=UTC)
+    openmeteo.fetch_met(start, 6, NOW)
+    n = len(mock.calls)
+    openmeteo.fetch_met(start, 6, NOW)
+    assert len(mock.calls) == n
+    monkeypatch.setattr(time, "time", lambda: REAL_TIME() + 2 * 3600)
+    openmeteo.fetch_met(start, 6, NOW)
+    assert len(mock.calls) == 2 * n
 
 
 def test_429_then_success_retries():

@@ -21,6 +21,8 @@ AIR_QUALITY_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 HOURLY_VARIABLES = VARIABLES
 ARCHIVE_LAG = timedelta(days=5)  # hours older than now - this come from the archive
 FORECAST_TTL_S = 3600
+ARCHIVE_FINAL_AFTER = timedelta(days=10)  # reanalysis publication lag: younger days may be holes
+ARCHIVE_PROVISIONAL_TTL_S = 6 * 3600
 MAX_RETRIES = 5  # on HTTP 429, sleeping 1, 2, 4, 8, 16 s
 MAX_PAST_DAYS, MAX_FORECAST_DAYS = 92, 16  # Open-Meteo limits
 _COMMON = {"wind_speed_unit": "ms", "timezone": "GMT"}
@@ -48,13 +50,65 @@ def _get(url: str, params: dict, sleep: Callable[[float], None]) -> bytes:
     raise UpstreamError(SERVICE, f"HTTP 429 from {url} after {MAX_RETRIES} retries")
 
 
-def _cached_json(url: str, params: dict, ttl_s: float | None, sleep) -> list | dict:
-    key = url + "?" + "&".join(f"{k}={params[k]}" for k in sorted(params))
-    raw = cached_bytes("openmeteo", key, lambda: _get(url, params, sleep), ttl_s)
+def _cache_key(url: str, params: dict) -> str:
+    return url + "?" + "&".join(f"{k}={params[k]}" for k in sorted(params))
+
+
+def _loads(raw: bytes, url: str) -> list | dict:
     try:
         return json.loads(raw)
     except ValueError as exc:
         raise UpstreamError(SERVICE, f"unparseable response from {url}") from exc
+
+
+def _cached_json(url: str, params: dict, ttl_s: float | None, sleep) -> list | dict:
+    raw = cached_bytes("openmeteo", _cache_key(url, params),
+                       lambda: _get(url, params, sleep), ttl_s)
+    return _loads(raw, url)
+
+
+class _Miss(Exception):
+    pass
+
+
+def _raise_miss() -> bytes:
+    raise _Miss
+
+
+def _archive_has_holes(data: bytes) -> bool:
+    """True if any variable except boundary_layer_height (null for whole years) has a null."""
+    try:
+        body = json.loads(data)
+    except ValueError:
+        return True
+    for item in body if isinstance(body, list) else [body]:
+        hourly = item.get("hourly", {}) if isinstance(item, dict) else {}
+        for name, values in hourly.items():
+            if name not in ("time", "boundary_layer_height") and any(v is None for v in values):
+                return True
+    return False
+
+
+def _archive_json(url: str, params: dict, may_be_final: bool, sleep) -> list | dict:
+    """Archive reply, cached immutably only when final; provisional ones live 6 h under another key.
+
+    Final needs the last requested day to be 10+ days old (`may_be_final`) and no nulls in any
+    variable but boundary_layer_height. Finality is part of the cache key so the two never mix.
+    """
+    key = _cache_key(url, params)
+    try:
+        return _loads(cached_bytes("openmeteo", "final:" + key, _raise_miss, None), url)
+    except _Miss:
+        pass
+
+    def fetch() -> bytes:
+        data = _get(url, params, sleep)
+        if may_be_final and not _archive_has_holes(data):
+            cached_bytes("openmeteo", "final:" + key, lambda: data, None)
+        return data
+
+    raw = cached_bytes("openmeteo", "provisional:" + key, fetch, ARCHIVE_PROVISIONAL_TTL_S)
+    return _loads(raw, url)
 
 
 def _series(hourly: dict, name: str, start: datetime, hours: int) -> np.ndarray:
@@ -83,7 +137,7 @@ def _parse_batch(body, start: datetime, hours: int) -> dict[str, np.ndarray]:
     }
 
 
-def _fetch_segment(url, extra, start, hours, lon_flat, lat_flat, ttl_s, sleep):
+def _fetch_segment(url, extra, start, hours, lon_flat, lat_flat, ttl_s, sleep, may_be_final=False):
     """Fetch one contiguous stretch of hours for every lattice point, in batches."""
     out = {n: np.full((hours, len(lon_flat)), np.nan, dtype=np.float32) for n in HOURLY_VARIABLES}
     for a in range(0, len(lon_flat), MET_BATCH):
@@ -93,7 +147,11 @@ def _fetch_segment(url, extra, start, hours, lon_flat, lat_flat, ttl_s, sleep):
             "longitude": ",".join(str(float(v)) for v in lon_flat[a:b]),
             "hourly": ",".join(HOURLY_VARIABLES), **_COMMON, **extra,
         }
-        parsed = _parse_batch(_cached_json(url, params, ttl_s, sleep), start, hours)
+        if url == ARCHIVE_URL:
+            body = _archive_json(url, params, may_be_final, sleep)
+        else:
+            body = _cached_json(url, params, ttl_s, sleep)
+        parsed = _parse_batch(body, start, hours)
         for name in HOURLY_VARIABLES:
             if parsed[name].shape[1] != b - a:
                 raise UpstreamError(SERVICE, "reply has the wrong number of points")
@@ -120,7 +178,8 @@ def fetch_met(
         d0 = start.date()
         d1 = (start + timedelta(hours=n_arch - 1)).date()
         extra = {"start_date": d0.isoformat(), "end_date": d1.isoformat()}
-        parts.append((0, n_arch, ARCHIVE_URL, extra, None))
+        final = d1 <= (now - ARCHIVE_FINAL_AFTER).date()
+        parts.append((0, n_arch, ARCHIVE_URL, extra, None, final))
     if n_arch < hours:
         first = (start + timedelta(hours=n_arch)).date()
         last = (start + timedelta(hours=hours - 1)).date()
@@ -128,13 +187,13 @@ def fetch_met(
         past = min(max((today - first).days, 0), MAX_PAST_DAYS)
         ahead = min(max((last - today).days + 1, 1), MAX_FORECAST_DAYS)
         extra = {"past_days": past, "forecast_days": ahead}
-        parts.append((n_arch, hours - n_arch, FORECAST_URL, extra, FORECAST_TTL_S))
+        parts.append((n_arch, hours - n_arch, FORECAST_URL, extra, FORECAST_TTL_S, False))
 
     variables = {n: np.full((hours, len(lon_flat)), np.nan, dtype=np.float32)
                  for n in HOURLY_VARIABLES}
-    for offset, count, url, extra, ttl_s in parts:
+    for offset, count, url, extra, ttl_s, final in parts:
         seg_start = start + timedelta(hours=offset)
-        seg = _fetch_segment(url, extra, seg_start, count, lon_flat, lat_flat, ttl_s, sleep)
+        seg = _fetch_segment(url, extra, seg_start, count, lon_flat, lat_flat, ttl_s, sleep, final)
         for name in HOURLY_VARIABLES:
             variables[name][offset:offset + count] = seg[name]
     return MetRaw(

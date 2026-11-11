@@ -1,3 +1,4 @@
+import warnings
 from datetime import UTC, datetime
 
 import numpy as np
@@ -110,3 +111,46 @@ def test_null_blh_uses_estimate_and_flags():
     s = f.sample(71.0, 11.0, 0.0)  # 00 UTC at lon 71 is ~04:44 local: night, 20 C, calm
     assert s.blh == pytest.approx(150.0)
     assert f.sample(72.0, 11.0, 0.0).blh == pytest.approx(500.0)
+
+
+def nan_raw(lat_i, lon_j, hour=None, var="temperature_2m"):
+    arr = np.full((4, 33, 33), 5.0)
+    arr[:, lat_i, lon_j] = np.nan if hour is None else 5.0
+    if hour is not None:
+        arr[hour, lat_i, lon_j] = np.nan
+    return make_raw(**{var: arr})
+
+
+def test_zero_weight_nan_neighbour_does_not_poison():
+    # (a) exact grid point (lon 77, lat 28 = lon_j 11, lat_i 22): NaN in the +x, +y, diagonal cells
+    for lat_i, lon_j in ((22, 12), (23, 11), (23, 12)):
+        f = met.MetField(nan_raw(lat_i, lon_j))
+        assert f.sample(77.0, 28.0, 0.0).temp_c == pytest.approx(5.0)
+    # (b) lattice edge: position beyond the east edge clamps to lon_j 32; NaN at the unused lon_j 31
+    f = met.MetField(nan_raw(10, 31))
+    assert f.sample(120.0, 16.0, 0.0).temp_c == pytest.approx(5.0)
+    # (c) integer hour: NaN only in hour 2 while sampling exactly hour 1 (and the last hour)
+    f = met.MetField(nan_raw(10, 10, hour=2))
+    assert f.sample(76.0, 16.0, 1.0).temp_c == pytest.approx(5.0)
+    f = met.MetField(nan_raw(10, 10, hour=2))
+    assert f.sample(76.0, 16.0, 3.0).temp_c == pytest.approx(5.0)
+
+
+def test_positive_weight_nan_still_propagates():
+    f = met.MetField(nan_raw(22, 12))  # NaN at lon 78, lat 28
+    assert np.isnan(f.sample(77.5, 28.0, 0.0).temp_c)
+    assert np.isnan(f.sample(78.0, 28.0, 0.0).temp_c)
+    assert np.isfinite(f.sample(77.5, 28.0, 0.0).u)  # other variables unaffected
+    f = met.MetField(nan_raw(10, 10, hour=2))
+    assert np.isnan(f.sample(76.0, 16.0, 1.5).temp_c)
+
+
+def test_nan_inputs_give_nan_without_warnings():
+    f = met.MetField(make_raw())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        s = f.sample(np.array([np.nan, 77.0, 77.0, 77.0]), np.array([28.0, np.nan, 28.0, 28.0]),
+                     np.array([0.0, 0.0, np.nan, 1.0]))
+    for name in ("u", "v", "blh", "rh", "temp_c", "precip_mm_h"):
+        arr = getattr(s, name)
+        assert np.isnan(arr[:3]).all() and np.isfinite(arr[3]), name

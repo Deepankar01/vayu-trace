@@ -140,12 +140,20 @@ class MetField:
         """Fields at positions `lon`, `lat` and fractional hours `t_hours` since `start`.
 
         Positions clamp to the lattice edge and time to the available hours. Output arrays have
-        the broadcast shape of the inputs. A NaN at any contributing lattice corner gives NaN.
+        the broadcast shape of the inputs.
+
+        Missing data: an output is NaN only if a lattice value it actually depends on (one with
+        positive interpolation weight) is NaN, or if `lon`, `lat` or `t_hours` is itself NaN (then
+        every output is NaN there). A neighbour with zero weight never contaminates a result.
+        `blh` is never NaN from missing data (null values are replaced by the estimate), so it
+        is NaN only for NaN inputs or when the estimate's inputs (temperature, wind) are missing.
         """
         lon, lat, t = np.broadcast_arrays(
             np.asarray(lon, dtype=float), np.asarray(lat, dtype=float),
             np.asarray(t_hours, dtype=float),
         )
+        bad = np.isnan(lon) | np.isnan(lat) | np.isnan(t)
+        lon, lat, t = (np.where(bad, 0.0, x) for x in (lon, lat, t))
         fx = np.clip((lon - self.raw.lon[0]) / MET_STEP_DEG, 0, NLON - 1)
         fy = np.clip((lat - self.raw.lat[0]) / MET_STEP_DEG, 0, NLAT - 1)
         ft = np.clip(t, 0, self.hours - 1)
@@ -160,5 +168,7 @@ class MetField:
         for tt, wt_ in ((it, 1 - wt), (it1, wt)):
             for yy, wy_ in ((iy, 1 - wy), (iy + 1, wy)):
                 for xx, wx_ in ((ix, 1 - wx), (ix + 1, wx)):
-                    out = out + d[:, tt, yy, xx] * (wt_ * wy_ * wx_)
+                    w = wt_ * wy_ * wx_
+                    out = out + np.where(w > 0, d[:, tt, yy, xx] * w, 0.0)
+        out = np.where(bad, np.nan, out)
         return MetSample(*(out[i].astype(float) for i in range(len(self._FIELDS))))
