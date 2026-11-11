@@ -14,6 +14,7 @@ from vayu.domain import (
     cell_center,
     cell_index,
     fire_state_mask,
+    india_mask,
     region_mask,
 )
 
@@ -127,3 +128,16 @@ def test_geojson_has_all_required_states():
     assert set(_STATE_NAMES) <= names
     assert set(_STATE_NAMES.values()) == {"punjab", "haryana", "uttar_pradesh", "bihar", "madhya_pradesh"}
     assert set(FIRE_STATES[:-1]) <= set(_STATE_NAMES.values())
+
+
+def test_india_mask_land_vs_outside():
+    ix, iy = cell_index(
+        np.array([77.21, 73.86, 79.5, 88.4, 70.0, 74.3, 90.4, 85.3]),
+        np.array([28.61, 18.52, 35.2, 22.6, 15.0, 31.5, 23.8, 27.7]),
+    )
+    # Delhi, Pune, Aksai Chin, Kolkata | Arabian Sea, Lahore, Dhaka, Kathmandu
+    assert list(india_mask()[iy, ix]) == [True, True, True, True, False, False, False, False]
+    assert india_mask().shape == (NY, NX) and india_mask() is india_mask()
+    # outside India region_mask says rest_of_india, which is why consumers need india_mask
+    assert REGIONS[region_mask()[iy[4], ix[4]]] == "rest_of_india"
+    assert 0.2 < india_mask().mean() < 0.4

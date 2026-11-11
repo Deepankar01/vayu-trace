@@ -1,0 +1,127 @@
+import netCDF4
+import numpy as np
+import pytest
+
+from vayu import config
+from vayu.domain import NX, NY, REGIONS, SECTORS, TAGS, cell_area_m2, india_mask, region_mask
+from vayu.emissions import inventory
+
+HOURS_PER_YEAR = 8760
+
+
+def write_nc(path, values, units, lat0=0.05, lon0=60.05, descending_lat=False):
+    """A synthetic EDGAR-style file: (lat, lon) variable `emissions` on a 0.1 degree grid whose
+    window (lon 60-100, lat 0-40) is larger than the model domain."""
+    n = values.shape[0]
+    lat = lat0 + 0.1 * np.arange(n)
+    lon = lon0 + 0.1 * np.arange(values.shape[1])
+    if descending_lat:
+        lat, values = lat[::-1], values[::-1]
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("lat", lat.size)
+        ds.createDimension("lon", lon.size)
+        ds.createVariable("lat", "f8", ("lat",))[:] = lat
+        ds.createVariable("lon", "f8", ("lon",))[:] = lon
+        v = ds.createVariable("emissions", "f4", ("lat", "lon"))
+        v.units = units
+        v[:] = values
+
+
+def window(fill):
+    return np.full((400, 400), fill, dtype=np.float32)
+
+
+def test_unit_conversion(tmp_path):
+    flux = tmp_path / "flux.nc"
+    write_nc(flux, window(2e-9), "kg m-2 s-1")
+    kg_h = inventory.read_grid(flux)
+    assert kg_h.shape == (NY, NX)
+    np.testing.assert_allclose(kg_h[:, 5], 2e-9 * cell_area_m2() * 3600, rtol=1e-6)
+
+    tonnes = tmp_path / "tonnes.nc"
+    write_nc(tonnes, window(8.76), "Tonnes")  # 8.76 t/yr = 1 kg/h
+    np.testing.assert_allclose(inventory.read_grid(tonnes), 1.0, rtol=1e-6)
+
+
+def test_read_grid_orientation_and_alignment(tmp_path):
+    values = np.arange(400 * 400, dtype=np.float32).reshape(400, 400)
+    south_north, north_south = tmp_path / "a.nc", tmp_path / "b.nc"
+    write_nc(south_north, values, "Tonnes")
+    write_nc(north_south, values, "Tonnes", descending_lat=True)
+    a, b = inventory.read_grid(south_north), inventory.read_grid(north_south)
+    np.testing.assert_array_equal(a, b)
+    # domain cell (iy=0, ix=0) is centre (66.05, 6.05) = file row 60, column 60
+    assert a[0, 0] == pytest.approx(float(values[60, 60]) * 1000 / HOURS_PER_YEAR, rel=1e-6)
+
+    shifted = tmp_path / "shifted.nc"
+    write_nc(shifted, values, "Tonnes", lon0=60.0)  # cell edges, not centres
+    with pytest.raises(ValueError, match="aligned"):
+        inventory.read_grid(shifted)
+    partial = tmp_path / "partial.nc"
+    write_nc(partial, values[:, :300], "Tonnes")  # lon stops at 90
+    with pytest.raises(ValueError, match="cover"):
+        inventory.read_grid(partial)
+
+
+def test_unknown_units_rejected(tmp_path):
+    bad = tmp_path / "bad.nc"
+    write_nc(bad, window(1.0), "ppm")
+    with pytest.raises(ValueError, match="units"):
+        inventory.read_grid(bad)
+
+
+def test_split_by_region_conserves_mass():
+    rng = np.random.default_rng(0)
+    grids = {s: rng.random((NY, NX)) for s in ("vehicles", "industry", "residential")}
+    em = inventory.split_by_region(grids)
+    land = india_mask()
+    for sector, grid in grids.items():
+        parts = []
+        for region in REGIONS:
+            iy, ix, kg = em.hour(f"{sector}_{region}", 0)
+            parts.append(kg.sum())
+            assert land[iy, ix].all()  # nothing outside India
+            assert (region_mask()[iy, ix] == REGIONS.index(region)).all()
+        np.testing.assert_allclose(sum(parts), grid[land].sum(), rtol=1e-12)
+    assert grids["vehicles"].sum() > grids["vehicles"][land].sum()  # something was dropped
+
+
+def test_dust_zero_when_unavailable():
+    em = inventory.split_by_region({s: np.ones((NY, NX)) for s in ("vehicles", "industry", "residential")})
+    for region in REGIONS:
+        assert em.hour(f"dust_{region}", 0)[2].size == 0
+    assert inventory.DUST_AVAILABLE is False
+
+
+def test_all_24_tags_present(tmp_path, monkeypatch):
+    install_fake_inventory(tmp_path)
+    em = inventory.inventory_emissions()
+    sector_tags = sorted(t.id for t in TAGS if t.kind == "sector")
+    assert len(sector_tags) == 24 == len(SECTORS) * len(REGIONS)
+    assert em.tags == sector_tags
+    notes = inventory.inventory_notes()
+    assert notes["dust_available"] is False and notes["year"] == 2022 and "EDGAR" in notes["source"]
+
+
+def install_fake_inventory(tmp_path):
+    folder = config.data_dir() / "inventory"
+    folder.mkdir(parents=True, exist_ok=True)
+    for i, name in enumerate(inventory.source_files()):
+        write_nc(folder / name, window(8.76 * (i + 1)), "Tonnes")
+
+
+def test_cache_is_built_once_and_reused(tmp_path):
+    install_fake_inventory(tmp_path)
+    first = inventory.inventory_emissions()
+    for f in (config.data_dir() / "inventory").glob("*.nc"):
+        f.unlink()
+    second = inventory.inventory_emissions()  # served from the .npz, raw files gone
+    assert list(config.data_dir().rglob("*.npz"))
+    for tag in first.tags:
+        for a, b in zip(first.hour(tag, 0), second.hour(tag, 0)):
+            np.testing.assert_array_equal(a, b)
+
+
+def test_missing_files_raise_with_fetch_instruction():
+    with pytest.raises(inventory.InventoryNotFound, match="scripts/fetch_inventory.py"):
+        inventory.inventory_emissions()

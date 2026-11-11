@@ -129,6 +129,20 @@ def _state_masks() -> dict[str, np.ndarray]:
 
 
 @lru_cache(maxsize=1)
+def india_mask() -> np.ndarray:
+    """(NY, NX) bool: cell centre inside any state or union-territory polygon of the official
+    outline (so ocean and neighbouring countries are False)."""
+    lon, lat = _grid_centres()
+    out = np.zeros((NY, NX), dtype=bool)
+    for feat in json.loads(_GEOJSON.read_text())["features"]:
+        geom = shape(feat["geometry"])
+        prepare(geom)
+        out |= contains_xy(geom, lon, lat)
+    out.setflags(write=False)
+    return out
+
+
+@lru_cache(maxsize=1)
 def region_mask() -> np.ndarray:
     """(NY, NX) int8 indexing REGIONS. Delhi NCR (50 km of Delhi) overrides the state."""
     masks = _state_masks()
