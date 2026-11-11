@@ -161,7 +161,7 @@ export function CityPanel() {
             )}
             {view.legend.map((r, i) => (
               <li key={r.key} className={r.kind === "unexplained" ? "gap" : undefined}>
-                <span className="name"><Dot color={r.color} />{r.label}</span>
+                <span className="name" title={r.label}><Dot color={r.color} />{r.label}</span>
                 <span className="v num" data-testid={`share-${r.kind === "minor" ? "minor" : r.kind === "unexplained" ? "unexplained" : r.key}`}>
                   {shareText[i]}
                 </span>
