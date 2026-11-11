@@ -10,6 +10,7 @@ import { RunStatus } from "./panels/RunStatus";
 import { SourcesPanel } from "./panels/SourcesPanel";
 import { Timeline } from "./panels/Timeline";
 import { TopBar } from "./panels/TopBar";
+import { ValidationButton } from "./panels/ValidationDialog";
 import "./panels/panels.css";
 import { useStore } from "./state/store";
 
@@ -74,6 +75,8 @@ export default function App() {
       <MapContainer onDropPoint={onDropPoint} onProblem={onProblem} />
       <div className="app-ui">
         <TopBar onDate={startRun} />
+        {/* Validation report (Task 16): mounted here, not in TopBar.tsx; may move into the top bar */}
+        <ValidationButton />
         {ready && (
           <>
             <button type="button" className="panel left-toggle" aria-label={leftOpen ? "Hide sources" : "Show sources"}
