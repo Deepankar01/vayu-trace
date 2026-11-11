@@ -12,6 +12,18 @@ from vayu import config
 FIXTURES = Path(__file__).resolve().parents[1] / "tests" / "fixtures"
 
 
+def _get(name: str, url: str, **kwargs) -> httpx.Response:
+    """GET that never prints the URL (the FIRMS key is in its path): httpx's own errors and
+    `raise_for_status()` both include it, so failures are reported by name and status only."""
+    try:
+        resp = httpx.get(url, timeout=120, **kwargs)
+    except httpx.HTTPError as exc:
+        raise SystemExit(f"{name}: request failed ({type(exc).__name__})") from None
+    if resp.status_code != 200:
+        raise SystemExit(f"{name}: HTTP {resp.status_code}, not saved")
+    return resp
+
+
 def record_firms() -> None:
     key = config.firms_map_key()
     out = FIXTURES / "firms"
@@ -22,9 +34,7 @@ def record_firms() -> None:
         "punjab_snpp_sp_2023-11-05.csv": f"{base}/area/csv/{key}/VIIRS_SNPP_SP/73,28,78,33/1/2023-11-05",
     }
     for name, url in targets.items():
-        resp = httpx.get(url, timeout=120)
-        resp.raise_for_status()
-        body = resp.text
+        body = _get(name, url).text
         if key in body or body.startswith("Invalid"):
             raise SystemExit(f"{name}: unusable response, not saved")
         (out / name).write_text(body)
@@ -53,8 +63,7 @@ def record_openmeteo() -> None:
              "start_date": "2023-11-05", "end_date": "2023-11-05"}),
     }
     for name, (url, params) in targets.items():
-        resp = httpx.get(url, params=params, timeout=120)
-        resp.raise_for_status()
+        resp = _get(name, url, params=params)
         (out / name).write_bytes(resp.content)
         print(f"saved {name} ({len(resp.content)} bytes)")
 
@@ -94,8 +103,7 @@ def record_openaq() -> None:
              "limit": 1000}),
     }
     for name, (path, params) in targets.items():
-        resp = httpx.get(base + path, params=params, headers=headers, timeout=120)
-        resp.raise_for_status()
+        resp = _get(name, base + path, params=params, headers=headers)
         (out / name).write_bytes(resp.content)
         print(f"saved {name} ({len(resp.content)} bytes)")
 
