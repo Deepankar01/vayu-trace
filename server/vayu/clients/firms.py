@@ -3,7 +3,7 @@ import csv
 import io
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import httpx
 import numpy as np
@@ -57,7 +57,12 @@ class Detections:
                           self.is_day[mask], self.satellite[mask])
 
 
-def _get(url: str) -> bytes:
+def _today() -> date:
+    """Today's UTC date (FIRMS days are UTC). Patched in tests."""
+    return datetime.now(UTC).date()
+
+
+def _get(url: str, expect_header: str) -> bytes:
     """GET `url`; error text never includes the URL because it carries the key."""
     try:
         resp = httpx.get(url, timeout=120.0)
@@ -67,13 +72,17 @@ def _get(url: str) -> bytes:
         raise UpstreamError("firms", f"HTTP {resp.status_code}")
     if resp.text.strip().startswith("Invalid MAP_KEY"):
         raise UpstreamError("firms", "Invalid MAP_KEY")
+    first_line = resp.text.lstrip().split("\n", 1)[0]
+    if not first_line.startswith(expect_header):
+        # a 200 with a non-CSV body (rate limit, bad area/date) must not look like "no fires"
+        raise UpstreamError("firms", "unexpected response body (not CSV)")
     return resp.content
 
 
 def availability() -> dict[str, tuple[date, date]]:
     """data_id -> (first date, last date) of FIRMS coverage."""
     url = f"{_BASE}/data_availability/csv/{config.firms_map_key()}/all"
-    raw = cached_bytes("firms", "availability", lambda: _get(url), ttl_s=AVAILABILITY_TTL_S)
+    raw = cached_bytes("firms", "availability", lambda: _get(url, "data_id"), ttl_s=AVAILABILITY_TTL_S)
     return {
         row["data_id"]: (date.fromisoformat(row["min_date"]), date.fromisoformat(row["max_date"]))
         for row in csv.DictReader(io.StringIO(raw.decode()))
@@ -89,11 +98,15 @@ def _area_csv(product: str, bbox: tuple[float, float, float, float], start: date
     """Raw CSV for `day_range` days from `start`. Cache key holds no API key."""
     bbox_s = _bbox_str(bbox)
     last = start + timedelta(days=day_range - 1)
-    immutable = (date.today() - last).days > IMMUTABLE_AFTER_DAYS
+    # Finality is decided at fetch time and baked into the key, so a partial-day response
+    # cached while the day was recent can never be promoted to permanent later.
+    immutable = (_today() - last).days > IMMUTABLE_AFTER_DAYS
     url = (f"{_BASE}/area/csv/{config.firms_map_key()}/{product}/{bbox_s}/{day_range}/"
            f"{start.isoformat()}")
     return cached_bytes(
-        "firms", f"{product}/{bbox_s}/{day_range}/{start.isoformat()}", lambda: _get(url),
+        "firms",
+        f"{product}/{bbox_s}/{day_range}/{start.isoformat()}/{'final' if immutable else 'recent'}",
+        lambda: _get(url, "latitude,longitude"),
         ttl_s=None if immutable else RECENT_TTL_S,
     )
 
@@ -136,15 +149,18 @@ def _static_cells(satellite: str, day: date) -> set[tuple[int, int]]:
     seen: set[tuple[tuple[int, int], str]] = set()
     cell_days: Counter[tuple[int, int]] = Counter()
     first = day - timedelta(days=HISTORY_DAYS)
-    for offset in range(0, HISTORY_DAYS, CHUNK_DAYS):
-        start = first + timedelta(days=offset)
-        rows = _rows(_area_csv(product, DOMAIN_BBOX, start, CHUNK_DAYS))
-        lon = np.array([float(r["longitude"]) for r in rows])
-        lat = np.array([float(r["latitude"]) for r in rows])
-        for cell, row in zip(_cell(lon, lat), rows):
+    last = day - timedelta(days=1)
+    # chunks sit on a fixed grid so consecutive target days share cached requests
+    start = first - timedelta(days=first.toordinal() % CHUNK_DAYS)
+    while start <= last:
+        for row in _rows(_area_csv(product, DOMAIN_BBOX, start, CHUNK_DAYS)):
+            if not first.isoformat() <= row["acq_date"] <= last.isoformat():
+                continue
+            cell = _cell(np.array([float(row["longitude"])]), np.array([float(row["latitude"])]))[0]
             if (cell, row["acq_date"]) not in seen:
                 seen.add((cell, row["acq_date"]))
                 cell_days[cell] += 1
+        start += timedelta(days=CHUNK_DAYS)
     return {c for c, n in cell_days.items() if n >= STATIC_MIN_DAYS}
 
 

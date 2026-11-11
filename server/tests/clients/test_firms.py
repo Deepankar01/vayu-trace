@@ -107,3 +107,41 @@ def test_nrt_static_sources_dropped(avail_route):
     det = firms.detections(day)
     assert set(det.lat.tolist()) == {21.0}
     assert (det.frp_mw == 5.0).all() and not det.is_day.any()
+
+
+def test_non_csv_200_body_rejected_and_not_cached(avail_route):
+    route = avail_route.get(url__startswith=AREA).respond(text="Rate limit exceeded.")
+    for _ in range(2):
+        with pytest.raises(UpstreamError, match="firms"):
+            firms._area_csv("VIIRS_NOAA20_NRT", PUNJAB, date(2026, 11, 10), 1)
+    assert route.call_count == 2
+    avail_route.get(AVAIL_URL).respond(text="<html>oops</html>")
+    with pytest.raises(UpstreamError):
+        firms.availability()
+
+
+def test_header_only_body_is_accepted(avail_route):
+    avail_route.get(url__startswith=AREA).respond(text=HEADER_NRT)
+    assert len(firms.detections(date(2026, 11, 10))) == 0
+
+
+def test_partial_day_never_promoted_to_final(avail_route, monkeypatch):
+    day = date(2026, 11, 10)
+    route = avail_route.get(url__startswith=AREA).respond(text=HEADER_NRT)
+    monkeypatch.setattr(firms, "_today", lambda: date(2026, 11, 10))
+    firms._area_csv("VIIRS_NOAA20_NRT", PUNJAB, day, 1)
+    assert route.call_count == 1
+    # 10 days later the day is old enough to be final: must refetch, not reuse the partial copy
+    monkeypatch.setattr(firms, "_today", lambda: date(2026, 11, 20))
+    firms._area_csv("VIIRS_NOAA20_NRT", PUNJAB, day, 1)
+    assert route.call_count == 2
+    firms._area_csv("VIIRS_NOAA20_NRT", PUNJAB, day, 1)
+    assert route.call_count == 2  # final copy is cached
+
+
+def test_static_history_chunks_shared_between_days(avail_route):
+    route = avail_route.get(url__startswith=AREA).respond(text=HEADER_NRT)
+    firms._static_cells("VIIRS_NOAA20", date(2026, 11, 10))
+    first = route.call_count
+    firms._static_cells("VIIRS_NOAA20", date(2026, 11, 11))
+    assert route.call_count - first <= 1
