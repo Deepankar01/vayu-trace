@@ -315,7 +315,6 @@ def _good_cams() -> httpx.Response:
 
 @pytest.mark.parametrize("bad", [
     httpx.Response(200, text="streaming timeout"),
-    httpx.Response(200, json={"error": True, "reason": "Timeout while streaming"}),
     httpx.Response(200, json={"hourly": {"time": ["2023-11-05T00:00"]}}),  # pm2_5 missing
 ])
 def test_cams_bad_200_body_is_retried_and_not_cached(bad, tmp_path):
@@ -363,7 +362,6 @@ def _bad_first(bad, n_bad=1):
 ])
 @pytest.mark.parametrize("bad", [
     httpx.Response(200, text="streaming timeout"),
-    httpx.Response(200, json={"error": True, "reason": "Timeout while streaming"}),
     httpx.Response(200, json=[{"latitude": 6.0}]),  # no hourly block
 ])
 def test_met_bad_200_body_retried_and_never_cached(endpoint, start, bad, tmp_path):
@@ -390,3 +388,53 @@ def test_met_bad_body_exhausted_then_good_reply_succeeds(tmp_path):
         m.get(url__startswith=ARCHIVE).mock(side_effect=fake_response)
         raw = openmeteo.fetch_met(old_start(), 24, NOW, sleep=lambda s: None)
     assert np.isfinite(raw.variables["temperature_2m"]).all()
+
+
+SLEEPS: list = []
+
+
+@pytest.mark.parametrize("url,call", [
+    (CAMS, lambda: openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2023, 11, 5, tzinfo=UTC), 24,
+                                             sleep=SLEEPS.append)),
+    (ARCHIVE, lambda: openmeteo.fetch_met(datetime(2023, 11, 5, tzinfo=UTC), 24, NOW,
+                                          sleep=SLEEPS.append)),
+])
+def test_error_payload_fails_fast_and_is_not_cached(url, call, tmp_path):
+    SLEEPS.clear()
+    with respx.mock() as m:
+        route = m.get(url__startswith=url).respond(
+            200, json={"error": True, "reason": "Cannot initialize WeatherVariable"})
+        with pytest.raises(UpstreamError) as exc:
+            call()
+    assert route.call_count == 1 and SLEEPS == []
+    assert "Cannot initialize WeatherVariable" in exc.value.message
+    assert not (tmp_path / "cache" / "openmeteo").exists()
+
+
+def test_missing_variable_is_named_in_the_error():
+    with respx.mock() as m:
+        m.get(url__startswith=CAMS).respond(200, json={"hourly": {"time": ["2023-11-05T00:00"]}})
+        with pytest.raises(UpstreamError) as exc:
+            openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2023, 11, 5, tzinfo=UTC), 24,
+                                      sleep=lambda s: None)
+    assert "hourly lacks pm2_5" in exc.value.message
+
+
+def test_all_null_pm25_is_accepted_and_cached(tmp_path):
+    times = [f"2023-11-05T{h:02d}:00" for h in range(24)]
+    body = {"hourly": {"time": times, "pm2_5": [None] * 24}}
+    with respx.mock() as m:
+        route = m.get(url__startswith=CAMS).respond(200, json=body)
+        pm = openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2023, 11, 5, tzinfo=UTC), 24)
+        openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2023, 11, 5, tzinfo=UTC), 24)
+    assert np.isnan(pm).all() and route.call_count == 1  # second call served from the cache
+    assert len(list((tmp_path / "cache" / "openmeteo").iterdir())) == 1
+
+
+def test_all_null_blh_is_accepted_and_cached(mock, monkeypatch, tmp_path):
+    monkeypatch.setattr(sys.modules[__name__], "NULLS", "boundary_layer_height")
+    raw = openmeteo.fetch_met(old_start(), 24, NOW, sleep=lambda s: pytest.fail("retried"))
+    assert np.isnan(raw.variables["boundary_layer_height"]).all()
+    n = len(mock.calls)
+    openmeteo.fetch_met(old_start(), 24, NOW)
+    assert len(mock.calls) == n  # cached, not refetched

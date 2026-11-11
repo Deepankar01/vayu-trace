@@ -23,7 +23,7 @@ ARCHIVE_LAG = timedelta(days=5)  # hours older than now - this come from the arc
 FORECAST_TTL_S = 3600
 ARCHIVE_FINAL_AFTER = timedelta(days=10)  # reanalysis publication lag: younger days may be holes
 ARCHIVE_PROVISIONAL_TTL_S = 6 * 3600
-MAX_RETRIES = 5  # on HTTP 429 or an unusable 200 body, sleeping 1, 2, 4, 8, 16 s
+MAX_RETRIES = 5  # on HTTP 429 or a garbled 200 body, sleeping 1, 2, 4, 8, 16 s
 MAX_PAST_DAYS, MAX_FORECAST_DAYS = 92, 16  # Open-Meteo limits
 _COMMON = {"wind_speed_unit": "ms", "timezone": "GMT"}
 
@@ -35,34 +35,41 @@ def _utc(dt: datetime) -> datetime:
 
 
 class _BadBody(Exception):
-    """A 200 reply whose body is not a usable Open-Meteo hourly reply."""
+    """A 200 reply whose body is not a usable Open-Meteo hourly reply (retried)."""
+
+
+class _ErrorReply(_BadBody):
+    """`{"error": true, "reason": ...}`: the service refused the request; retrying will not help."""
 
 
 def _check_body(raw: bytes, params: dict) -> None:
     """Raise _BadBody unless `raw` is JSON shaped like a reply to `params`: an object, or a list
-    of one object per requested point, each with `hourly.time` and every requested variable.
-    `{"error": true, "reason": ...}` is an upstream error, whatever the status code."""
+    of one object per requested point, each with `hourly.time` and every requested variable (a
+    list, which may be all null). `{"error": true, ...}` raises _ErrorReply."""
     try:
         body = json.loads(raw)
     except ValueError:
         raise _BadBody("not JSON") from None
     if isinstance(body, dict) and body.get("error"):
-        raise _BadBody(f"error reply ({body.get('reason') or 'no reason given'})")
+        raise _ErrorReply(f"error reply ({body.get('reason') or 'no reason given'})")
     items = body if isinstance(body, list) else [body]
     n_points = len(str(params.get("latitude", "")).split(","))
     if not items or (isinstance(body, list) and n_points > 1 and len(items) != n_points):
         raise _BadBody("wrong number of points")
-    wanted = ["time", *str(params.get("hourly", "")).split(",")]
+    wanted = [n for n in ("time", *str(params.get("hourly", "")).split(",")) if n]
     for item in items:
         hourly = item.get("hourly") if isinstance(item, dict) else None
-        if not isinstance(hourly, dict) or any(
-                not isinstance(hourly.get(name), list) for name in wanted if name):
-            raise _BadBody("no hourly data for the requested variables")
+        if not isinstance(hourly, dict):
+            raise _BadBody("no hourly block")
+        missing = [n for n in wanted if not isinstance(hourly.get(n), list)]
+        if missing:
+            raise _BadBody(f"hourly lacks {', '.join(missing)}")
 
 
 def _get(url: str, params: dict, sleep: Callable[[float], None]) -> bytes:
     """GET with exponential backoff on 429 and on a 200 whose body fails `_check_body` (so an
-    unusable body never reaches the cache). Anything else non-200 raises at once."""
+    unusable body never reaches the cache). An error payload or any other non-200 status raises
+    at once."""
     problem = "HTTP 429"
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -73,6 +80,8 @@ def _get(url: str, params: dict, sleep: Callable[[float], None]) -> bytes:
             try:
                 _check_body(resp.content, params)
                 return resp.content
+            except _ErrorReply as exc:
+                raise UpstreamError(SERVICE, f"{exc} from {url}") from None
             except _BadBody as exc:
                 problem = f"unusable reply ({exc})"
         elif resp.status_code != 429:
