@@ -1,0 +1,175 @@
+{
+ "_note": "HAND-WRITTEN: api.data.gov.in returned HTTP 502 (gateway timeout, ~60 s) for every request on 2026-11-11, so no real page could be recorded. Field names follow the public schema of resource 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69 from documentation, unverified against a live reply. Re-record with `uv run python scripts/record_fixtures.py datagov` when the service is up.",
+ "title": "Real time Air Quality Index from various locations",
+ "status": "ok",
+ "version": "1.0.0",
+ "total": 9,
+ "count": 9,
+ "limit": "100",
+ "offset": "0",
+ "field": [
+  {
+   "id": "country",
+   "type": "keyword"
+  },
+  {
+   "id": "state",
+   "type": "keyword"
+  },
+  {
+   "id": "city",
+   "type": "keyword"
+  },
+  {
+   "id": "station",
+   "type": "keyword"
+  },
+  {
+   "id": "last_update",
+   "type": "date"
+  },
+  {
+   "id": "latitude",
+   "type": "double"
+  },
+  {
+   "id": "longitude",
+   "type": "double"
+  },
+  {
+   "id": "pollutant_id",
+   "type": "keyword"
+  },
+  {
+   "id": "pollutant_min",
+   "type": "double"
+  },
+  {
+   "id": "pollutant_max",
+   "type": "double"
+  },
+  {
+   "id": "pollutant_avg",
+   "type": "double"
+  }
+ ],
+ "records": [
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "Anand Vihar, Delhi - DPCC",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "120",
+   "pollutant_max": "310",
+   "pollutant_avg": "210"
+  },
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "Anand Vihar, Delhi - DPCC",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "PM10",
+   "pollutant_min": "200",
+   "pollutant_max": "500",
+   "pollutant_avg": "380"
+  },
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "ITO, Delhi - CPCB",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "90",
+   "pollutant_max": "250",
+   "pollutant_avg": "150"
+  },
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "Lodhi Road, Delhi - IMD",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "NA",
+   "pollutant_max": "NA",
+   "pollutant_avg": "NA"
+  },
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "R K Puram, Delhi - DPCC",
+   "last_update": "11-11-2026 09:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "100",
+   "pollutant_max": "200",
+   "pollutant_avg": "120"
+  },
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "R K Puram, Delhi - DPCC",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "110",
+   "pollutant_max": "220",
+   "pollutant_avg": "180"
+  },
+  {
+   "country": "India",
+   "state": "Delhi",
+   "city": "Delhi",
+   "station": "Okhla, Delhi - DPCC",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.6",
+   "longitude": "77.2",
+   "pollutant_id": "NO2",
+   "pollutant_min": "10",
+   "pollutant_max": "60",
+   "pollutant_avg": "35"
+  },
+  {
+   "country": "India",
+   "state": "Haryana",
+   "city": "Gurgaon",
+   "station": "Vikas Sadan, Gurugram - HSPCB",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "28.45",
+   "longitude": "77.03",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "80",
+   "pollutant_max": "240",
+   "pollutant_avg": "160"
+  },
+  {
+   "country": "India",
+   "state": "Maharashtra",
+   "city": "Mumbai",
+   "station": "Bandra, Mumbai - MPCB",
+   "last_update": "11-11-2026 10:00:00",
+   "latitude": "19.06",
+   "longitude": "72.84",
+   "pollutant_id": "PM2.5",
+   "pollutant_min": "NA",
+   "pollutant_max": "NA",
+   "pollutant_avg": "NA"
+  }
+ ]
+}
