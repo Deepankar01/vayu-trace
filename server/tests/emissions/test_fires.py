@@ -104,11 +104,37 @@ def test_frp_is_scaled_to_peak_by_profile(monkeypatch):
         SPREAD * C.EF_PM25_CROP_G_PER_KG / math.exp(-0.5), rel=0.01)
 
 
-def test_night_only_cell_uses_floored_profile(monkeypatch):
-    patch(monkeypatch, {DAY: det([(*LUDHIANA, 1.0, "20:00", False, "VIIRS_SNPP")])})
+def kg_for_peak(mw, ef=C.EF_PM25_CROP_G_PER_KG):
+    return mw / 10.0 * SPREAD * ef
+
+
+def test_night_only_cell_one_satellite_not_scaled_up(monkeypatch):
+    patch(monkeypatch, {DAY: det([(*LUDHIANA, 5.0, "20:00", False, "VIIRS_SNPP")])})
+    em = fires.fire_emissions(START, 24, LATER)
+    assert total(em, "fire_punjab", 24) == pytest.approx(kg_for_peak(5.0), rel=0.01)
+
+
+def test_night_only_cell_two_satellites_averaged(monkeypatch):
+    rows = [(*LUDHIANA, 5.0, "20:00", False, "VIIRS_SNPP"),
+            (*LUDHIANA, 3.0, "21:00", False, "VIIRS_NOAA20")]
+    patch(monkeypatch, {DAY: det(rows)})
+    em = fires.fire_emissions(START, 24, LATER)
+    assert total(em, "fire_punjab", 24) == pytest.approx(kg_for_peak(4.0), rel=0.01)
+
+
+def test_night_pixels_ignored_when_another_satellite_has_day_pixel(monkeypatch):
+    rows = [(*LUDHIANA, 10.0, "09:00", True, "VIIRS_SNPP"),
+            (*LUDHIANA, 5.0, "20:00", False, "VIIRS_NOAA20")]
+    patch(monkeypatch, {DAY: det(rows)})
+    em = fires.fire_emissions(START, 24, LATER)
+    assert total(em, "fire_punjab", 24) == pytest.approx(kg_for_peak(5.0), rel=0.01)  # mean(10, 0)
+
+
+def test_far_from_peak_day_detection_uses_floor(monkeypatch):
+    patch(monkeypatch, {DAY: det([(*LUDHIANA, 1.0, "20:00", True, "VIIRS_SNPP")])})
     em = fires.fire_emissions(START, 24, LATER)
     assert total(em, "fire_punjab", 24) == pytest.approx(
-        0.1 * SPREAD * C.EF_PM25_CROP_G_PER_KG / C.FIRE_PROFILE_FLOOR, rel=0.01)
+        kg_for_peak(1.0 / C.FIRE_PROFILE_FLOOR), rel=0.01)
 
 
 def test_night_pixels_ignored_when_cell_has_day_pixels(monkeypatch):
@@ -182,6 +208,18 @@ def test_upstream_error_propagates(monkeypatch):
     monkeypatch.setattr(firms, "detections", boom)
     with pytest.raises(UpstreamError):
         fires.fire_emissions(START, 24, LATER)
+
+
+def test_missing_product_error_on_forecast_basis_day_propagates(monkeypatch):
+    from vayu.errors import UpstreamError
+
+    def fake(day):
+        if day == date(2025, 10, 31):  # one of the three basis days for now = 2025-11-02
+            raise UpstreamError("firms", f"no fire product covers {day}")
+        return Detections.empty()
+    monkeypatch.setattr(firms, "detections", fake)
+    with pytest.raises(UpstreamError, match="no fire product covers 2025-10-31"):
+        fires.fire_emissions(datetime(2025, 11, 2, tzinfo=UTC), 24, datetime(2025, 11, 2, 6, tzinfo=UTC))
 
 
 def test_rejects_naive_or_unaligned_start():

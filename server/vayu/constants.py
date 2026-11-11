@@ -33,13 +33,15 @@ BLH_DAY_HALF_WIDTH_H = 5.0  # convective layer exists within +/- this many hours
 
 # --- Fire emissions (vayu.emissions.fires) ---
 
-# Local solar time of peak fire activity: mid-afternoon, matching the geostationary diurnal-cycle
-# literature (e.g. Giglio 2007, Remote Sens. Environ. 108, 407-421; Mu et al. 2011, JGR 116,
-# D24303). IST = UTC + 5:30, so 14.5 h IST = 09:00 UTC. Design choice, not fitted.
+# IST clock time (UTC+5:30) of peak fire activity, approximating mid-afternoon local solar time
+# across India; mid-afternoon peaks are reported by Giglio 2007 (Remote Sens. Environ. 108,
+# 407-421) and Mu et al. 2011 (J. Geophys. Res. 116, D24303). 14.5 h IST = 09:00 UTC. Design
+# choice, not fitted.
 FIRE_PEAK_HOUR_IST = 14.5
 
-# Standard deviation (hours) of the Gaussian diurnal fire-activity profile. Design choice within
-# the 2-3 h widths used in the same literature (Mu et al. 2011). Not fitted.
+# Standard deviation (hours) of the Gaussian diurnal fire-activity profile. Design choice (not
+# fitted), informed by the daytime-peaked diurnal fire cycles reported by Giglio 2007 and
+# Mu et al. 2011.
 FIRE_SIGMA_H = 2.5
 
 # Biomass burned per unit fire radiative energy: 0.368 kg per MJ (Wooster et al. 2005,
@@ -61,6 +63,7 @@ CROP_STATES = ("punjab", "haryana", "uttar_pradesh", "madhya_pradesh")
 # G04012; van der Werf et al. 2017, Earth Syst. Sci. Data 9, 697-720).
 FIRE_SCALING_DEFAULT = 1.0
 
-# Lower bound on the diurnal profile value when dividing FRP by it (night-time or far-from-peak
-# detections would otherwise be inflated without limit). Design choice, not fitted.
+# Lower bound on the diurnal profile value when dividing a DAY-flagged detection's FRP by it, so a
+# day-flagged detection far from the peak is not inflated without limit. Night detections are never
+# divided by the profile (see vayu.emissions.fires). Design choice, not fitted.
 FIRE_PROFILE_FLOOR = 0.05

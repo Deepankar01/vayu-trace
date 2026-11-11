@@ -1,11 +1,17 @@
 """Hourly PM2.5 emissions from VIIRS fire radiative power (FRP).
 
 Method, per UTC day:
- 1. Each detection's FRP is divided by the diurnal profile g(t) at its acquisition time, giving the
-    FRP the same fire would have at the daily peak. Several pixels in one cell are several fires,
-    so a cell's peak FRP for one satellite is the SUM over its pixels. A satellite that observed the
-    day (any detection in the domain) but saw nothing in a cell contributes zero there; the
-    per-satellite grids are AVERAGED (not summed: satellites re-observe the same fires).
+ 1. Each daytime detection's FRP is divided by the diurnal profile g(t) at its acquisition time
+    (floored at FIRE_PROFILE_FLOOR), giving the FRP the same fire would have at the daily peak.
+    Several pixels in one cell are several fires, so a cell's peak FRP for one satellite is the SUM
+    over its pixels. A satellite that observed the day (any detection in the domain) but saw
+    nothing in a cell contributes zero there; the per-satellite grids are AVERAGED (not summed:
+    satellites re-observe the same fires).
+    Night detections: if ANY satellite has a daytime detection in a cell that day, night detections
+    in that cell are ignored for every satellite. If the cell has only night detections, each
+    satellite's value is the SUM of its night FRP taken as the peak, with NO division by g (g
+    treated as 1). A single night pixel must not be scaled up by 1/g to a large assumed daytime
+    peak; under-counting night-only fires is the conservative direction.
  2. Daily energy (MJ) = FRP_peak (MW) * sqrt(2 pi) * sigma * 3600 s, the integral of the Gaussian.
  3. kg PM2.5 = MJ * BIOMASS_KG_PER_MJ * EF (g/kg) / 1000, EF by the cell's fire state.
  4. The daily mass is spread over UTC hours by the Gaussian profile, renormalised to sum to 1.
@@ -55,17 +61,19 @@ def _daily_kg(day: date) -> np.ndarray:
     det, ix, iy = det.select(ok), ix[ok], iy[ok]
     minutes = (det.acq_utc - np.datetime64(day.isoformat(), "m")) / np.timedelta64(1, "m")
     g = np.maximum(profile(minutes / 60.0), C.FIRE_PROFILE_FLOOR)
-    peak = det.frp_mw / g
+    peak = det.frp_mw / g  # used for day-flagged detections only
     flat = iy * NX + ix
     sats = np.unique(det.satellite)
+    day_any = np.zeros(NY * NX, dtype=bool)
+    day_any[flat[det.is_day]] = True
     mean_peak = np.zeros(NY * NX)
     for sat in sats:
         m = det.satellite == sat
         day_sum = np.zeros(NY * NX)
         night_sum = np.zeros(NY * NX)
         np.add.at(day_sum, flat[m & det.is_day], peak[m & det.is_day])
-        np.add.at(night_sum, flat[m & ~det.is_day], peak[m & ~det.is_day])
-        mean_peak += np.where(day_sum > 0, day_sum, night_sum)  # night used only if no day pixel
+        np.add.at(night_sum, flat[m & ~det.is_day], det.frp_mw[m & ~det.is_day])  # g taken as 1
+        mean_peak += np.where(day_any, day_sum, night_sum)
     mean_peak = mean_peak.reshape(NY, NX) / len(sats)
     energy_mj = mean_peak * math.sqrt(2 * math.pi) * C.FIRE_SIGMA_H * 3600.0
     return energy_mj * C.BIOMASS_KG_PER_MJ * _ef_grid() / 1000.0

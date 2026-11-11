@@ -189,8 +189,11 @@ def _choose_products(day: date) -> list[str]:
 
 def detections(day: date) -> Detections:
     """Fire detections for one UTC day over the model domain, all usable satellites."""
+    products = _choose_products(day)
+    if not products:  # missing data must never read as "no fires"
+        raise UpstreamError("firms", f"no fire product covers {day}")
     parts = []
-    for product in _choose_products(day):
+    for product in products:
         det = _product_detections(product, day, DOMAIN_BBOX)
         if product.endswith("_NRT") and len(det):
             static = _static_cells(product.removesuffix("_NRT"), day)

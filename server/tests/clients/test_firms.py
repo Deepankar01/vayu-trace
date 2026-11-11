@@ -67,6 +67,12 @@ def test_skips_stale_satellite(avail_route):
     assert not any(p.startswith("VIIRS_SNPP") for p in requested_products(avail_route))
 
 
+def test_no_product_covering_day_raises(avail_route):
+    with pytest.raises(UpstreamError, match="no fire product covers 2010-01-01"):
+        firms.detections(date(2010, 1, 1))
+    assert requested_products(avail_route) == []
+
+
 def test_invalid_key_raises(avail_route):
     avail_route.get(AVAIL_URL).respond(text="Invalid MAP_KEY.")
     with pytest.raises(UpstreamError) as err:
