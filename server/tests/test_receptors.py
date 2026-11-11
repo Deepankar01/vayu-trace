@@ -384,7 +384,7 @@ def test_city_series_met_samples_ramping_wind_with_offset():
 @pytest.mark.parametrize("corner", [(0, 0), (NX - 1, NY - 1)])
 def test_block_edge_has_four_cells(corner):
     ix, iy = corner
-    city = City("edge", 6.0 + 0.1 * (iy + 0.5), 66.0 + 0.1 * (ix + 0.5))
+    city = City("edge", "Edge", 6.0 + 0.1 * (iy + 0.5), 66.0 + 0.1 * (ix + 0.5))
     flat, ok = receptors._blocks([city])
     assert ok.sum() == 4
     cells = {(int(f) % NX, int(f) // NX) for f in flat[0][ok[0]]}
