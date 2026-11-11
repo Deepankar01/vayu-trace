@@ -23,6 +23,13 @@ interface Split {
   night: { n: number; bias: number | null; nmb: number | null };
 }
 
+export interface RStats {
+  median: number | null;
+  mean: number | null;
+  min: number | null;
+  max: number | null;
+}
+
 export interface ValidationRow {
   id: string;
   name: string;
@@ -33,12 +40,20 @@ export interface ValidationRow {
   mean_sim: number | null;
   mean_measured: number | null;
   split: { model: Split; cams: Split };
+  /** Pooled rows only (reports from before this field existed lack it). */
+  r_per_city?: { cities: number; model_r_gt_cams_r: number; model: RStats; cams: RStats };
+}
+
+export interface RunRef {
+  date: string;
+  build_id: string;
 }
 
 export interface ValidationReport {
   episode: { start: string; end: string; hours: number };
   min_n: number;
   generated_at?: string;
+  runs?: RunRef[];
   cities: ValidationRow[];
   pooled: ValidationRow[];
 }
@@ -108,21 +123,64 @@ function Table({ rows, caption }: { rows: ValidationRow[]; caption: string }) {
   );
 }
 
+function RPerCity({ rows }: { rows: ValidationRow[] }) {
+  const withStats = rows.filter((r) => r.r_per_city);
+  if (withStats.length === 0) return null;
+  return (
+    <>
+      <p className="note">
+        Pooled r is a correlation across all city-hours and includes differences between cities. Agreement from hour
+        to hour is the per-city r:
+      </p>
+      <ul className="vd-rstats num">
+        {withStats.map((r) => {
+          const s = r.r_per_city!;
+          return (
+            <li key={r.id} data-testid={`rstats-${r.id}`}>
+              {r.name}: median per-city r {fix(s.model.median, 2)} model, {fix(s.cams.median, 2)} CAMS (means{" "}
+              {fix(s.model.mean, 2)} and {fix(s.cams.mean, 2)}); model r above CAMS r in {s.model_r_gt_cams_r} of {s.cities}{" "}
+              cities.
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 export function ValidationDialog({ onClose, fetchImpl }: { onClose: () => void; fetchImpl?: typeof fetch }) {
   const load = useValidationReport(fetchImpl);
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => closeRef.current?.focus(), []);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") {
       e.stopPropagation();
       onClose();
+      return;
+    }
+    if (e.key !== "Tab" || !dialogRef.current) return;
+    // aria-modal: keep focus inside the dialog
+    const items = [...dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
+    if (items.length === 0) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && (active === last || !dialogRef.current.contains(active))) {
+      e.preventDefault();
+      first.focus();
     }
   };
 
   return (
     <div className="vd-layer" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="panel vd" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onKey}>
+      <div ref={dialogRef} className="panel vd" role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={onKey}>
         <div className="vd-head">
           <h4 id={titleId}>Validation · model vs CPCB measurements</h4>
           <button ref={closeRef} type="button" className="vd-close" aria-label="Close validation" onClick={onClose}>×</button>
@@ -142,11 +200,17 @@ export function ValidationDialog({ onClose, fetchImpl }: { onClose: () => void; 
             </p>
             <h4 className="h4-sub">Pooled</h4>
             <Table rows={load.report.pooled} caption="Pooled metrics" />
+            <RPerCity rows={load.report.pooled} />
             <h4 className="h4-sub">Per city</h4>
             <div className="vd-scroll">
               <Table rows={load.report.cities} caption="Per-city metrics" />
             </div>
             <p className="note">Full method and reading: docs/validation/ in the repository.</p>
+            <p className="vd-prov num" data-testid="vd-provenance">
+              Episode {load.report.episode.start.slice(0, 10)} to {load.report.episode.end.slice(0, 10)}
+              {load.report.generated_at ? ` · generated ${load.report.generated_at}` : ""}
+              {load.report.runs?.length ? ` · runs ${load.report.runs.map((r) => `${r.date} (${r.build_id})`).join(", ")}` : ""}
+            </p>
           </>
         )}
       </div>

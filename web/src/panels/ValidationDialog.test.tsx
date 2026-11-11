@@ -16,7 +16,18 @@ const row = (id: string, name: string, over: Partial<ValidationRow> = {}): Valid
 const REPORT: ValidationReport = {
   episode: { start: "2025-11-03T00:00:00+00:00", end: "2025-11-09T23:00:00+00:00", hours: 168 },
   min_n: 24,
-  pooled: [row("all", "All 28 northern cities"), row("ncr", "Delhi NCR (5 cities)")],
+  generated_at: "2026-11-11T09:30:00+00:00",
+  runs: [{ date: "2025-11-05", build_id: "20261111T083034Z-87c28ccb" }, { date: "2025-11-06", build_id: "20261111T090356Z-61c44bb0" }],
+  pooled: [
+    row("all", "All 28 northern cities", {
+      r_per_city: {
+        cities: 28, model_r_gt_cams_r: 4,
+        model: { median: 0.178, mean: 0.148, min: -0.18, max: 0.51 },
+        cams: { median: 0.383, mean: 0.376, min: 0.01, max: 0.72 },
+      },
+    }),
+    row("ncr", "Delhi NCR (5 cities)"),
+  ],
   cities: [
     row("delhi", "Delhi"),
     row("gaya", "Gaya", {
@@ -30,6 +41,51 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("ValidationDialog", () => {
+  it("shows per-city r statistics for pooled rows that have them, and the provenance", async () => {
+    const f = vi.fn(async () => json(REPORT));
+    render(<ValidationDialog onClose={() => {}} fetchImpl={f as unknown as typeof fetch} />);
+    const all = await screen.findByTestId("rstats-all");
+    expect(all.textContent).toContain("median per-city r 0.18 model, 0.38 CAMS");
+    expect(all.textContent).toContain("model r above CAMS r in 4 of 28");
+    expect(screen.queryByTestId("rstats-ncr")).toBeNull(); // old-shape row: no stats, no crash
+    const prov = screen.getByTestId("vd-provenance").textContent!;
+    expect(prov).toContain("generated 2026-11-11T09:30:00+00:00");
+    expect(prov).toContain("2025-11-05 (20261111T083034Z-87c28ccb)");
+  });
+
+  it("renders a report without r_per_city, runs or generated_at (older shape)", async () => {
+    const old = { ...REPORT, generated_at: undefined, runs: undefined, pooled: [row("all", "All 28 northern cities")] };
+    const f = vi.fn(async () => json(old));
+    render(<ValidationDialog onClose={() => {}} fetchImpl={f as unknown as typeof fetch} />);
+    expect(await screen.findByText("All 28 northern cities")).toBeInTheDocument();
+    expect(screen.queryByTestId("rstats-all")).toBeNull();
+    expect(screen.getByTestId("vd-provenance").textContent).toBe("Episode 2025-11-03 to 2025-11-09");
+  });
+
+  it("shows a fetch error", async () => {
+    const f = vi.fn(async () => json({ detail: "boom" }, 500));
+    render(<ValidationDialog onClose={() => {}} fetchImpl={f as unknown as typeof fetch} />);
+    expect(await screen.findByText("Could not load the validation report: HTTP 500")).toBeInTheDocument();
+    const g = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    render(<ValidationDialog onClose={() => {}} fetchImpl={g as unknown as typeof fetch} />);
+    expect(await screen.findByText(/Could not load the validation report: TypeError: Failed to fetch/)).toBeInTheDocument();
+  });
+
+  it("keeps Tab focus inside the dialog", async () => {
+    const f = vi.fn(async () => json({ detail: "none" }, 404));
+    render(<><button type="button">outside</button><ValidationDialog onClose={() => {}} fetchImpl={f as unknown as typeof fetch} /></>);
+    await screen.findByText(NO_REPORT);
+    const close = screen.getByRole("button", { name: "Close validation" });
+    expect(close).toHaveFocus(); // the only focusable element
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab" });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab", shiftKey: true });
+    expect(close).toHaveFocus();
+    screen.getByRole("button", { name: "outside" }).focus();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Tab" });
+    expect(close).toHaveFocus();
+  });
+
   it("renders the episode, the no-fitting statement, pooled and per-city rows", async () => {
     const f = vi.fn(async () => json(REPORT));
     render(<ValidationDialog onClose={() => {}} fetchImpl={f as unknown as typeof fetch} />);
