@@ -195,10 +195,10 @@ def test_valid_cache_without_source_files_raises(tmp_path):
     inventory.inventory_emissions()
     for f in (config.data_dir() / "inventory").glob("*.nc"):
         f.unlink()
-    with pytest.raises(inventory.InventoryNotFound, match="scripts/fetch_inventory.py"):
+    with pytest.raises(inventory.InventoryNotFound, match="make setup"):
         inventory.inventory_emissions()
 
 
 def test_missing_files_raise_with_fetch_instruction():
-    with pytest.raises(inventory.InventoryNotFound, match="scripts/fetch_inventory.py"):
+    with pytest.raises(inventory.InventoryNotFound, match="make setup"):
         inventory.inventory_emissions()

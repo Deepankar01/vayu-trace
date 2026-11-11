@@ -1,6 +1,11 @@
 """Shared exception types."""
 
 
+class SetupError(RuntimeError):
+    """The installation is incomplete (a key or a download is missing). The message says how to
+    fix it, contains no secret, and is shown to the user verbatim."""
+
+
 class UpstreamError(Exception):
     """An upstream data service failed or returned something unusable."""
 

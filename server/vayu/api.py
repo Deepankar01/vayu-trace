@@ -50,7 +50,7 @@ from vayu.domain import CELL, LAT_MIN, LON_MIN, NX, NY, TAGS
 from vayu.emissions.dropped import FIREWORKS_SIZE_NAMES, KINDS, dropped_emissions
 from vayu.emissions.inventory import inventory_notes
 from vayu.encode import HAZE, encode_frame
-from vayu.errors import UpstreamError
+from vayu.errors import SetupError, UpstreamError
 from vayu.met import NLAT, NLON, MetField, MetRaw, lattice
 from vayu.receptors import USER_COLOR, back_trajectory, city_region, city_series
 from vayu.sim.run import (
@@ -393,6 +393,8 @@ def _build(day: date) -> None:
         _S.set_status(day, "ready", 1.0, "ready")
     except UpstreamError as exc:
         _S.set_status(day, "error", error=_scrub(f"{exc.service}: {exc.message}"))
+    except SetupError as exc:  # missing key or download: its message says what to do
+        _S.set_status(day, "error", error=_scrub(str(exc)))
     except Exception:  # noqa: BLE001 - reported as a status, traceback logged
         _log_exception(f"build for {day} failed")
         _S.set_status(day, "error",
@@ -610,6 +612,11 @@ async def _vanished(request: Request, exc: _BuildFilesGone):
 async def _upstream_error(request: Request, exc: UpstreamError):
     return CleanJSONResponse({"detail": _scrub(f"{exc.service}: {exc.message}")},
                              status_code=502)
+
+
+@app.exception_handler(SetupError)
+async def _setup_error(request: Request, exc: SetupError):
+    return CleanJSONResponse({"detail": _scrub(str(exc))}, status_code=503)
 
 
 class RunRequest(BaseModel):

@@ -11,11 +11,12 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from vayu import api
+from vayu import api, config
 from vayu.cities import BY_ID, CITIES
 from vayu.clients.firms import Detections
 from vayu.clients.openaq import MeasuredSeries
 from vayu.domain import NX, NY, TAGS, cell_index
+from vayu.emissions.inventory import InventoryNotFound
 from vayu.encode import HAZE, decode_frame
 from vayu.errors import UpstreamError
 from vayu.met import MetRaw, lattice
@@ -371,6 +372,34 @@ def test_upstream_error_surfaces_message(env, monkeypatch):
     monkeypatch.setattr(api, "run_date", env["plain_run_date"])
     assert c.post("/api/runs", json={"date": "2023-11-05"}).status_code == 202
     assert wait_status(c)["status"] == "ready"
+
+
+@pytest.mark.parametrize("exc, message", [
+    (lambda: InventoryNotFound("Emission inventory not found (missing: a.zip). Run `make setup` "
+                               "(or ...)."), "Emission inventory not found"),
+    (lambda: config._get("NO_SUCH_KEY_FOR_TEST"), "NO_SUCH_KEY_FOR_TEST is not set. Add it to .env"),
+])
+def test_setup_error_message_is_the_build_status(env, monkeypatch, exc, message):
+    def broken(day, now, progress):
+        raise exc()
+
+    monkeypatch.setattr(api, "run_date", broken)
+    c = env["client"]
+    c.post("/api/runs", json={"date": "2023-11-05"})
+    body = wait_status(c)
+    assert body["status"] == "error" and body["error"].startswith(message)
+
+
+def test_missing_key_at_request_time_is_503_with_its_message(env, monkeypatch):
+    def no_key(city, start, hours, now=None):
+        return config._get("OPENAQ_API_KEY")
+
+    monkeypatch.delenv("OPENAQ_API_KEY")
+    monkeypatch.setattr(config, "_read_dotenv", dict)
+    monkeypatch.setattr(api, "city_pm25", no_key)
+    r = ready(env).get("/api/runs/2023-11-05/cities/delhi/measured")
+    assert r.status_code == 503
+    assert r.json()["detail"] == "OPENAQ_API_KEY is not set. Add it to .env at the repository root."
 
 
 def test_other_error_is_generic_and_logged(env, monkeypatch, caplog):

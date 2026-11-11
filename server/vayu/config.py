@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+from vayu.errors import SetupError
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SERVER_ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,7 +25,7 @@ def _read_dotenv() -> dict[str, str]:
 def _get(name: str) -> str:
     value = os.environ.get(name) or _read_dotenv().get(name)
     if not value:
-        raise RuntimeError(f"{name} is not set: put it in the environment or {_REPO_ROOT / '.env'}")
+        raise SetupError(f"{name} is not set. Add it to .env at the repository root.")
     return value
 
 

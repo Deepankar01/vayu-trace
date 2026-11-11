@@ -28,6 +28,7 @@ from vayu.domain import (
     region_mask,
 )
 from vayu.emissions import Emissions
+from vayu.errors import SetupError
 
 YEAR = 2022
 RELEASE = "v8.1_FT2022_AP"
@@ -53,7 +54,7 @@ _TONNES = {"Tonnes", "tonnes", "t", "Mg"}  # case-sensitive: "mg" is milligram, 
 _FLUX = {"kgm-2s-1", "kg/m2/s", "kgm^-2s^-1"}
 
 
-class InventoryNotFound(FileNotFoundError):
+class InventoryNotFound(SetupError):
     """The EDGAR files have not been downloaded."""
 
 
@@ -126,8 +127,8 @@ def _require_files() -> None:
     missing = [n for n in source_files() if not (folder / n).is_file()]
     if missing:
         raise InventoryNotFound(
-            f"EDGAR inventory files missing in {folder}: {', '.join(missing)}. "
-            "Run `uv run python scripts/fetch_inventory.py` from the server directory."
+            f"Emission inventory not found (missing: {', '.join(missing)}). Run `make setup` "
+            "(or `uv run python scripts/fetch_inventory.py` from the server directory)."
         )
 
 
