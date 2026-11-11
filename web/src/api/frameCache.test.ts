@@ -173,6 +173,29 @@ describe("FrameCache extras, failures and clear", () => {
     }
   });
 
+  it("gaveUp(hour) after the last attempt; retry(hour) starts a fresh count and refetches", async () => {
+    vi.useFakeTimers();
+    try {
+      const { cache, calls } = setup(30, { radius: 0 });
+      cache.setCentre(10);
+      for (let k = 0; k < 3; k++) {
+        expect(cache.gaveUp(10)).toBe(false);
+        calls[calls.length - 1].reject(new Error("boom"));
+        await vi.advanceTimersByTimeAsync(3000);
+      }
+      expect(calls).toHaveLength(3);
+      expect(cache.gaveUp(10)).toBe(true);
+      cache.retry(10);
+      expect(cache.gaveUp(10)).toBe(false);
+      expect(calls).toHaveLength(4);
+      calls[3].reject(new Error("again"));
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(calls).toHaveLength(5); // automatic retries resume: the count was reset
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a retry that succeeds caches the frame", async () => {
     vi.useFakeTimers();
     try {

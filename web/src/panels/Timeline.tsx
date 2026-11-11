@@ -25,6 +25,8 @@ export function Timeline() {
   const speed = useApp((s) => s.speed);
   const firesContinue = useApp((s) => s.firesContinue);
   const loadingHour = useMapStatus((m) => m.plumeLoadingHour);
+  useApp((s) => s.frameFailures); // re-render when an hour fails, to ask gaveUp again
+  const failedHour = loadingHour !== null && store.frames.gaveUp(loadingHour) ? loadingHour : null;
 
   const n = meta?.hours.length ?? 0;
   const last = Math.max(1, n - 1);
@@ -51,7 +53,16 @@ export function Timeline() {
       <div className="time-block">
         <div className="clock-big num" data-testid="clock">{meta ? fmtISTShort(meta.hours[h]) : DASH} <HourTag /></div>
         <div className="mute small">
-          {loadingHour !== null ? <span className="loading">loading hour {loadingHour}…</span> : `IST · 1 h steps · ${speed}× speed`}
+          {failedHour !== null ? (
+            <span className="load-failed">
+              hour {failedHour} failed to load —{" "}
+              <button type="button" className="link-btn" onClick={() => store.getState().retryHour(failedHour)}>retry</button>
+            </span>
+          ) : loadingHour !== null ? (
+            <span className="loading">loading hour {loadingHour}…</span>
+          ) : (
+            `IST · 1 h steps · ${speed}× speed`
+          )}
         </div>
       </div>
 

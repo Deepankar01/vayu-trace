@@ -13,7 +13,8 @@
  *   it until the refetch lands).
  * - A failed hour is reported through `onError` and retried after `retryDelayMs` (3 s), at most
  *   `maxAttempts` (3) attempts per hour per build (counted until `clear()`/extras change), so a
- *   failing server is not hammered.
+ *   failing server is not hammered. `gaveUp(hour)` says an hour is out of attempts; `retry(hour)`
+ *   gives it a fresh set.
  * - `isStale(hour)`: the cached frame lacks a currently enabled extra tag (it may be shown until
  *   its replacement, already being fetched, arrives). A frame carrying MORE tags than enabled is
  *   not stale: the extra tags have weight 0.
@@ -110,6 +111,20 @@ export class FrameCache {
   isStale(hour: number): boolean {
     const e = this.cache.get(hour);
     return e !== undefined && !this.satisfies(e.extras, this.extras);
+  }
+
+  /** True when `hour` failed `maxAttempts` times and is no longer retried automatically. */
+  gaveUp(hour: number): boolean {
+    return this.failed.has(hour) && this.failed.get(hour) === null;
+  }
+
+  /** Forget `hour`'s failures and fetch it again (if it is in the window). */
+  retry(hour: number): void {
+    const t = this.failed.get(hour);
+    if (t) clearTimeout(t);
+    this.failed.delete(hour);
+    this.attempts.delete(hour);
+    this.pump();
   }
 
   /** Hours currently cached (for tests and diagnostics). */

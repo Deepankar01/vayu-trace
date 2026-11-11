@@ -100,7 +100,6 @@ export function CityPanel() {
 
   let camsNote: string | null = null;
   if (cams.status === "loading" || cams.status === "idle") camsNote = "loading…";
-  else if (cams.status === "error") camsNote = "n/a";
   else if (!cams.values || cams.values.every((v) => v == null)) camsNote = "n/a for these dates";
   let measuredNote: string | null = null;
   if (measured.status === "loading" || measured.status === "idle") measuredNote = "loading…";
@@ -204,7 +203,8 @@ export function CityPanel() {
         hours={meta.hours} sim={view.totals}
         measured={measured.status === "ready" ? measured.values : null}
         cams={cams.status === "ready" ? cams.values : null}
-        camsNote={camsNote} measuredNote={measuredNote}
+        camsNote={camsNote} camsError={cams.status === "error" ? (cams.error ?? "error") : null}
+        measuredNote={measuredNote}
         hour={hourF} forecastFrom={meta.forecast_from} firesAssumedFrom={meta.fires_assumed_from}
         onSeek={(x) => store.getState().setHour(x)}
       />

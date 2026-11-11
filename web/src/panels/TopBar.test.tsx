@@ -62,7 +62,7 @@ describe("TopBar", () => {
   });
   it("tags the IST clock 'forecast' on a forecast hour, nothing on an observed one", () => {
     const meta = makeMeta({ fires_assumed_from: 20, forecast_from: 24 });
-    const { store } = renderPanel(<TopBar />, { meta, hour: 5 });
+    const { store } = renderPanel(<TopBar date="2026-11-10" onDate={() => {}} />, { meta, hour: 5 });
     expect(screen.queryByTestId("hour-tag")).toBeNull();
     act(() => store.getState().setHour(26));
     expect(screen.getByTestId("ist-clock")).toContainElement(screen.getByTestId("hour-tag"));

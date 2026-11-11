@@ -245,6 +245,15 @@ describe("CityPanel", () => {
     expect(screen.getByTestId("sim-hourly").textContent).toBe("this hour: 340 µg/m³");
   });
 
+  it("CAMS failure: 'Copernicus: failed to load' with the error as tooltip", () => {
+    const meta = makeMeta({ hours: N, cities: [delhi(sim100)] });
+    renderPanel(<CityPanel />, { meta, hour: H, cams: { delhi: { ...IDLE_CITY_DATA, status: "error", error: "HTTP 502" } } });
+    const legend = screen.getByTestId("cams-failed");
+    expect(legend.textContent).toBe("Copernicus: failed to load");
+    expect(legend.getAttribute("title")).toBe("HTTP 502");
+    expect(screen.queryByText("n/a")).toBeNull();
+  });
+
   it("draws the model vs measured chart with a now marker", () => {
     setup(sim100, flat(N, 160));
     expect(screen.getByRole("img", { name: /Model vs measured/ })).toBeInTheDocument();

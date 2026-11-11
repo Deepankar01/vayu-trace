@@ -26,6 +26,8 @@ export interface ModelChartProps {
   cams: Series | null;
   /** Text shown for CAMS instead of values when it is missing, loading or failed. */
   camsNote: string | null;
+  /** CAMS failed to load: the legend says so, with this error as its tooltip. */
+  camsError?: string | null;
   measuredNote: string | null;
   hour: number;
   forecastFrom: number | null;
@@ -114,7 +116,11 @@ export function ModelChart(p: ModelChartProps) {
       <figcaption className="chart-legend">
         <span><i className="key key-model" />our model</span>
         <span><i className="key key-cpcb" />CPCB{p.measuredNote ? <em> {p.measuredNote}</em> : null}</span>
-        <span><i className="key key-cams" />Copernicus CAMS{p.camsNote ? <em> {p.camsNote}</em> : null}</span>
+        {p.camsError ? (
+          <span title={p.camsError} data-testid="cams-failed"><i className="key key-cams" />Copernicus: failed to load</span>
+        ) : (
+          <span><i className="key key-cams" />Copernicus CAMS{p.camsNote ? <em> {p.camsNote}</em> : null}</span>
+        )}
       </figcaption>
     </figure>
   );

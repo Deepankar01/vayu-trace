@@ -1480,3 +1480,6 @@ button:disabled {
   font-size: 10px;
   margin-top: 5px;
 }
+.load-failed {
+  color: #d9b56a;
+}

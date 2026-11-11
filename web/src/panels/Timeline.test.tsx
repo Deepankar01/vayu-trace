@@ -1,5 +1,5 @@
-import { fireEvent, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, fireEvent, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useMapStatus } from "../map/mapStatus";
 import { makeMeta } from "../test-utils/meta";
 import { renderPanel } from "../test-utils/panels";
@@ -37,6 +37,20 @@ describe("Timeline", () => {
     renderPanel(<Timeline />, { meta, hour: 21 });
     expect(screen.getByTestId("clock")).toContainElement(screen.getByTestId("hour-tag"));
     expect(screen.getByTestId("hour-tag").textContent).toBe("fires assumed");
+  });
+  it("an hour the frame cache gave up on says so with a retry button; retry fetches it again", () => {
+    const { store } = renderPanel(<Timeline />);
+    useMapStatus.setState({ plumeLoadingHour: 7 });
+    const gaveUp = vi.spyOn(store.frames, "gaveUp").mockImplementation((h) => h === 7);
+    const retry = vi.spyOn(store.frames, "retry").mockImplementation(() => {});
+    act(() => store.setState({ frameFailures: 1 }));
+    expect(screen.getByText(/hour 7 failed to load/)).toBeInTheDocument();
+    expect(screen.queryByText("loading hour 7…")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "retry" }));
+    expect(retry).toHaveBeenCalledWith(7);
+    gaveUp.mockReturnValue(false);
+    act(() => store.setState({ frameFailures: 2 }));
+    expect(screen.getByText("loading hour 7…")).toBeInTheDocument();
   });
   it("caption whenever fires are assumed (continue by default)", () => {
     renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });

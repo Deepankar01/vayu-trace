@@ -342,6 +342,19 @@ describe("playback", () => {
     expect(h.get().hour).toBe(9);
   });
 
+  it("a seek to an hour the frame cache gave up on retries it; frame failures are counted", async () => {
+    const h = harness(readyServer(undefined, (u) => (u.includes("/frames/7?") ? json({ detail: "boom" }, 500) : undefined)));
+    await h.get().startRun("2026-11-10");
+    h.get().setHour(7);
+    await vi.advanceTimersByTimeAsync(10_000); // three attempts, 3 s apart
+    expect(h.store.frames.gaveUp(7)).toBe(true);
+    expect(h.get().frameFailures).toBe(3);
+    const before = h.calls.filter((c) => c.includes("/frames/7?")).length;
+    h.get().setHour(7.5);
+    expect(h.store.frames.gaveUp(7)).toBe(false);
+    expect(h.calls.filter((c) => c.includes("/frames/7?")).length).toBe(before + 1);
+  });
+
   it("does nothing while paused; setHour clamps; play on the last hour restarts", async () => {
     const h = await ready(10);
     h.get().tick(5);

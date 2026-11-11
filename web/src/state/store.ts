@@ -102,13 +102,18 @@ export interface AppState {
   /** Bumped whenever the frame cache changes, so views know to recompose. */
   frameVersion: number;
   frameError: string | null;
+  /** Bumped on every frame failure, so views can ask `frames.gaveUp(hour)` again. */
+  frameFailures: number;
   sourceError: string | null;
   /** A short message for the UI (e.g. the run was refreshed and added sources were removed). */
   notice: string | null;
 
   startRun: (date: string) => Promise<void>;
   clearNotice: () => void;
+  /** Move the playhead (a seek): an hour the frame cache gave up on is tried again. */
   setHour: (h: number) => void;
+  /** Fetch an hour the frame cache gave up on again, with a fresh set of attempts. */
+  retryHour: (h: number) => void;
   togglePlay: () => void;
   setSpeed: (s: Speed) => void;
   tick: (dtSeconds: number) => void;
@@ -179,7 +184,8 @@ export function createAppStore(deps: StoreDeps = {}) {
         autoRebuilds = 0;
         if (get().frameError !== null) set({ frameError: null });
       },
-      onError: (hour, e) => set({ frameError: `frame for hour ${hour}: ${errorMessage(e)}` }),
+      onError: (hour, e) =>
+        set((s) => ({ frameError: `frame for hour ${hour}: ${errorMessage(e)}`, frameFailures: s.frameFailures + 1 })),
     });
 
     const userSourcesFrom = (meta: Meta, previous: UserSource[]): UserSource[] =>
@@ -384,7 +390,7 @@ export function createAppStore(deps: StoreDeps = {}) {
       layers: { pm25: true, aqi: false, wind: true, fires: true, terrain: false },
       sliders: { ...DEFAULT_SLIDERS }, fireScaling: 1, firesContinue: true,
       regionScenario: { ...NO_SCENARIO }, userSources: [], selectedCity: null, compareBaseline: false,
-      measured: {}, cams: {}, frameVersion: 0, frameError: null, sourceError: null, notice: null,
+      measured: {}, cams: {}, frameVersion: 0, frameError: null, frameFailures: 0, sourceError: null, notice: null,
 
       startRun: async (date) => {
         const token = ++runToken;
@@ -418,7 +424,9 @@ export function createAppStore(deps: StoreDeps = {}) {
         const hour = clamp(h, 0, lastHour());
         set({ hour });
         frames.setCentre(hour);
+        if (frames.gaveUp(Math.floor(hour))) frames.retry(Math.floor(hour));
       },
+      retryHour: (h) => frames.retry(Math.floor(h)),
       togglePlay: () => {
         const s = get();
         if (!s.meta) return;
