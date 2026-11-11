@@ -154,3 +154,47 @@ def test_nan_inputs_give_nan_without_warnings():
     for name in ("u", "v", "blh", "rh", "temp_c", "precip_mm_h"):
         arr = getattr(s, name)
         assert np.isnan(arr[:3]).all() and np.isfinite(arr[3]), name
+
+
+@pytest.mark.parametrize("t", [0.0, 1.0, 1.25, 2.5, 3.0, 7.0, -2.0])
+def test_scalar_time_fast_path_matches_general_path(t):
+    rng = np.random.default_rng(3)
+    shape = (4, 33, 33)
+    fields = {
+        "wind_speed_10m": rng.uniform(0, 10, shape), "wind_direction_10m": rng.uniform(0, 360, shape),
+        "wind_speed_100m": rng.uniform(0, 15, shape),
+        "wind_direction_100m": rng.uniform(0, 360, shape),
+        "temperature_2m": rng.uniform(-5, 35, shape),
+        "relative_humidity_2m": rng.uniform(5, 100, shape),
+        "precipitation": rng.uniform(0, 3, shape),
+        "boundary_layer_height": rng.uniform(50, 3000, shape),
+    }
+    for name in ("temperature_2m", "precipitation", "wind_speed_10m"):
+        arr = fields[name]
+        arr[rng.random(shape) < 0.05] = np.nan
+    arr = fields["temperature_2m"]
+    arr[1, 22, 11] = arr[2, 22, 12] = np.nan  # around lon 77-78, lat 28
+    f = met.MetField(make_raw(**fields))
+    n = 4000
+    lon = rng.uniform(60, 104, n)
+    lat = rng.uniform(0, 44, n)
+    lon[:500] = np.round(lon[:500])  # on lattice lines
+    lat[250:750] = np.round(lat[250:750])
+    lon[750:800], lat[750:800] = 77.0, 28.0  # exactly on a lattice point next to NaN cells
+    lon[800:820] = np.nan
+    lat[820:840] = np.nan
+    lon[840:860], lat[840:860] = 98.0, 38.0  # NE corner
+    fast = f.sample(lon, lat, t)
+    general = f.sample(lon, lat, np.full(n, t))
+    for name in ("u", "v", "blh", "rh", "temp_c", "precip_mm_h"):
+        a, b = getattr(fast, name), getattr(general, name)
+        np.testing.assert_array_equal(np.isnan(a), np.isnan(b), err_msg=name)
+        np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-9, equal_nan=True, err_msg=name)
+    assert np.isnan(fast.temp_c).any() and np.isfinite(fast.temp_c).any()
+    assert np.isnan(fast.u[800:840]).all()
+
+
+def test_scalar_time_fast_path_scalar_inputs():
+    f = met.MetField(make_raw())
+    s = f.sample(77.3, 28.6, 1.5)
+    assert np.ndim(s.u) == 0 and s.blh == pytest.approx(500.0)

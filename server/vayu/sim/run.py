@@ -2,22 +2,32 @@
 
 Time base. Met and emissions are indexed from `sim_start = start - spinup_h`: emission hour `k`
 covers [sim_start + k, sim_start + k + 1) and met time `t` is hours since `sim_start`. Parcels
-released during the spin-up are advanced, but frames are written only from `start` on. Output
-frame `h` is the state at `start + h` hours (frame 0 is the state at the window start).
+released during the spin-up are advanced, but frames are written only from `start` on.
 
-Within each hour `k`: grid the current state (if it is an output hour), release hour `k`'s
-emissions at time `k`, then take 3600 / DT_S transport steps.
+Within each hour `k`: release hour `k`'s emissions at time `k`, then take 3600 / DT_S transport
+steps, sampling the parcel state before each step (times k, k + 1/6, ..., k + 5/6). Output frame
+`h` is the MEAN over those samples, i.e. the mean over [start + h, start + h + 1) (CPCB's hourly
+average convention); it includes that hour's own release. The volume uses the mean of the
+mixing height at the hour's start and end; the haze factor uses the mean relative humidity
+likewise. Each tag's mass grid is smoothed with an age-dependent box kernel (constants.py,
+KERNEL_*) before dividing by volume, conserving mass exactly.
 
 Linearity. One `np.random.Generator` drives everything, and the random stream never depends on
-emission magnitudes: each non-zero tag-hour draws exactly `particles_per_tag_hour` parcels with
-normalised (scale-invariant) cell probabilities. Parcel survival depends only on met, domain and
-depletion relative to release mass. Scaling every emission by a power of two therefore gives the
-same trajectories and fields scaled by exactly that factor, which is what lets the browser
-rescale sources.
+emission magnitudes: each non-zero tag-hour draws a fixed number of parcels (a pure function of
+the tag id) with normalised cell probabilities. Transport and survival depend only on met,
+domain and the surviving fraction `frac`, never on mass. Scaling every emission by a factor
+therefore gives the same trajectories, and fields scaled by that factor (exactly for powers of
+two, within float32 rounding otherwise). That is what lets the browser rescale sources.
+
+Storage. A run is written into a temporary sibling directory and renamed into place only when
+complete, so a failed or concurrent run never leaves mixed frames. `load_run` serves a stored run
+only while it is still valid for the date (same code constants, same window, final or fresh).
 """
 import json
 import math
 import os
+import shutil
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -27,8 +37,9 @@ from pathlib import Path
 import numpy as np
 
 from vayu import config
+from vayu import constants as C
 from vayu.clients.openmeteo import fetch_met
-from vayu.constants import DT_S, HAZE_GROWTH_COEFF, HAZE_RH_CAP
+from vayu.constants import DT_S, HAZE_GROWTH_COEFF, HAZE_RH_CAP, KERNEL_AGE_H, KERNEL_HALF_WIDTH
 from vayu.domain import (
     CELL,
     LAT_MIN,
@@ -43,19 +54,28 @@ from vayu.domain import (
 )
 from vayu.emissions import Emissions
 from vayu.emissions.fires import fire_emissions
-from vayu.emissions.inventory import inventory_emissions
+from vayu.emissions.inventory import EDGAR_SECTORS, inventory_emissions, inventory_notes
 from vayu.met import MetField
+from vayu.sim import particles
 from vayu.sim.particles import Particles, step
 from vayu.terrain import elevation
 
 WINDOW_H = 144  # output hours per run
 SPINUP_H = 48  # hours simulated before the window so it starts with transported pollution
-# Parcels released per emitting tag per hour. The plan's 200 took 128 s per run; lowered to 100 to
-# stay under 90 s (timing in docs/data-notes.md, "Simulation run timing").
+# Parcels released per emitting tag per hour (see parcels_per_tag_hour). Design choices, not
+# fitted. The default was lowered from the plan's 200 to bound run time; the four
+# `*_rest_of_india` sector tags cover most of the country, so a parcel there would otherwise
+# carry tens of µg/m³ in a city cell (sampling noise figures in docs/data-notes.md).
 PARTICLES_PER_TAG_HOUR = 100
+PARTICLES_REST_OF_INDIA = 400
+
+FORMAT_VERSION = 2
+FINAL_AFTER = timedelta(days=5)  # a run made this long after its window ends is never refreshed
+FRESH_FOR = timedelta(hours=1)  # otherwise it is served for this long after it was made
 
 STEPS_PER_HOUR = 3600 // DT_S
 NCELL = NY * NX
+NCLASS = len(KERNEL_HALF_WIDTH)  # age classes of the smoothing kernel
 TAG_IDS = [t.id for t in TAGS]
 _TAG_INDEX = {tid: i for i, tid in enumerate(TAG_IDS)}
 _FIRE_TAGS = np.array([i for i, t in enumerate(TAGS) if t.kind in ("fire", "firefc")])
@@ -67,20 +87,30 @@ def _noop(fraction: float, stage: str) -> None:
     pass
 
 
+def parcels_per_tag_hour(tag_id: str) -> int:
+    """Parcels released per hour for an emitting tag: a fixed catalogue, never data-dependent."""
+    tag = TAGS[_TAG_INDEX[tag_id]]
+    if tag.kind == "sector" and tag.region == "rest_of_india":
+        return PARTICLES_REST_OF_INDIA
+    return PARTICLES_PER_TAG_HOUR
+
+
 # --- window ---
 
-def run_window(day: date, now: datetime | None = None) -> tuple[datetime, int | None]:
+def _utc(now: datetime) -> datetime:
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    return now.astimezone(UTC)
+
+
+def run_window(day: date, now: datetime) -> tuple[datetime, int | None]:
     """(start, forecast_from) of the output window for `day`.
 
     Past day D: hours start at D-2 00:00 UTC; today (D == now's UTC date): at D-3 00:00 UTC.
     `forecast_from` is the index of the first output hour strictly later than `now`, or None if
-    the whole window is in the past. `now` defaults to the current time; pass it explicitly
-    wherever reproducibility matters. Future days are rejected.
+    the whole window is in the past. Future days are rejected.
     """
-    now = datetime.now(UTC) if now is None else now
-    if now.tzinfo is None:
-        raise ValueError("now must be timezone-aware")
-    now = now.astimezone(UTC)
+    now = _utc(now)
     today = now.date()
     if day > today:
         raise ValueError(f"{day} is in the future (today is {today} UTC)")
@@ -88,6 +118,38 @@ def run_window(day: date, now: datetime | None = None) -> tuple[datetime, int | 
     start = datetime.combine(day - timedelta(days=back), time(0), tzinfo=UTC)
     first_later = math.floor((now - start) / timedelta(hours=1)) + 1
     return start, (first_later if first_later < WINDOW_H else None)
+
+
+def fires_assumed_from(start: datetime, now: datetime, hours: int) -> int | None:
+    """Index of the first output hour at or after 00:00 UTC of `now`'s day, from which fire
+    emissions are persistence (`firefc_*`), or None if the window ends before then."""
+    midnight = datetime.combine(_utc(now).date(), time(0), tzinfo=UTC)
+    first = max(math.ceil((midnight - start) / timedelta(hours=1)), 0)
+    return first if first < hours else None
+
+
+def constants_snapshot() -> dict:
+    """Every setting that affects a run's results, read at call time (JSON-normalised)."""
+    snap = {
+        name: getattr(particles, name)
+        for name in ("DT_S", "K_H_M2_S", "V_DEP_M_S", "WASHOUT_A", "WASHOUT_B", "Z_RELAX_S",
+                     "MIN_MASS_FRACTION")
+    }
+    snap.update({
+        name: getattr(C, name)
+        for name in ("HAZE_GROWTH_COEFF", "HAZE_RH_CAP", "KERNEL_AGE_H", "KERNEL_HALF_WIDTH",
+                     "FIRE_PEAK_HOUR_IST", "FIRE_SIGMA_H", "BIOMASS_KG_PER_MJ",
+                     "EF_PM25_CROP_G_PER_KG", "EF_PM25_VEG_G_PER_KG", "CROP_STATES",
+                     "FIRE_PROFILE_FLOOR", "WIND_BLEND_100M", "MET_STEP_DEG", "BLH_MIN_M",
+                     "BLH_MAX_M", "BLH_NIGHT_BASE_M", "BLH_NIGHT_PER_MS", "BLH_DAY_BASE_M",
+                     "BLH_DAY_PER_K", "BLH_PEAK_LOCAL_HOUR", "BLH_DAY_HALF_WIDTH_H")
+    })
+    snap.update(
+        SPINUP_H=SPINUP_H, WINDOW_H=WINDOW_H, PARTICLES_PER_TAG_HOUR=PARTICLES_PER_TAG_HOUR,
+        PARTICLES_REST_OF_INDIA=PARTICLES_REST_OF_INDIA, inventory=inventory_notes(),
+        inventory_sectors=EDGAR_SECTORS,
+    )
+    return json.loads(json.dumps(snap))
 
 
 # --- per-hour fields ---
@@ -102,6 +164,28 @@ def haze_factor(rh: np.ndarray) -> np.ndarray:
 @lru_cache(maxsize=1)
 def _cell_centres() -> tuple[np.ndarray, np.ndarray]:
     return np.meshgrid(*cell_center(np.arange(NX), np.arange(NY)))
+
+
+def _box_counts(n: int, r: int) -> np.ndarray:
+    """Per index, how many indices within +/- r lie inside 0..n-1."""
+    i = np.arange(n)
+    return np.minimum(i + r, n - 1) - np.maximum(i - r, 0) + 1
+
+
+def _box_spread(mass: np.ndarray, r: int) -> np.ndarray:
+    """Spread each cell's mass equally over the in-domain cells of the (2r+1)^2 box around it.
+
+    Total mass is conserved (each source divides by its own in-domain box size). Uses padded
+    slicing, not cumulative sums, so cells the kernel does not reach stay exactly zero.
+    """
+    if r == 0:
+        return mass
+    ny, nx = mass.shape
+    w = mass / (_box_counts(ny, r)[:, None] * _box_counts(nx, r)[None, :])
+    pad = np.pad(w, ((r, r), (0, 0)))
+    rows = sum(pad[j:j + ny] for j in range(2 * r + 1))
+    pad = np.pad(rows, ((0, 0), (r, r)))
+    return sum(pad[:, j:j + nx] for j in range(2 * r + 1))
 
 
 def _weighted_median_by_cell(cell, value, weight, ncell: int) -> np.ndarray:
@@ -125,40 +209,67 @@ def _weighted_median_by_cell(cell, value, weight, ncell: int) -> np.ndarray:
     return out
 
 
-def _grid(p: Particles, met, t_hours: float) -> dict[str, np.ndarray]:
-    """Frame arrays for the current state: one float32 (NY, NX) field per emitting tag (µg/m³),
-    plus haze factor, fire age (h) and the mask of cells where mixing height is missing."""
-    lon_c, lat_c = _cell_centres()
-    s = met.sample(lon_c, lat_c, t_hours)
-    blh = np.asarray(s.blh, dtype=float)
-    missing = np.isnan(blh)
-    ix, iy = cell_index(p.lon, p.lat)
-    ok = inside(ix, iy)
-    cell = (iy * NX + ix)[ok]
-    tag = p.tag[ok].astype(np.int64)
-    mass_kg = p.mass_kg[ok].astype(np.float64)
-    mass = np.bincount(tag * NCELL + cell, weights=mass_kg, minlength=len(TAGS) * NCELL)
-    mass = mass.reshape(len(TAGS), NY, NX)
-    volume_m3 = cell_area_m2()[:, None] * blh
-    out = {}
-    for i in np.flatnonzero(mass.reshape(len(TAGS), -1).any(axis=1)):
-        out[TAG_IDS[i]] = (mass[i] * 1e9 / volume_m3).astype(np.float32)
-    fire = np.isin(tag, _FIRE_TAGS)
-    age_h = p.age_s[ok][fire].astype(np.float64) / 3600.0
-    out["fire_age_h"] = _weighted_median_by_cell(
-        cell[fire], age_h, mass_kg[fire], NCELL).reshape(NY, NX).astype(np.float32)
-    out["haze"] = haze_factor(s.rh).astype(np.float32)
-    out["missing"] = missing
-    return out
+class _HourMean:
+    """Accumulates parcel samples within one hour and turns them into frame arrays."""
+
+    def __init__(self, active: list[int]):
+        self.slot = np.full(len(TAGS), -1, dtype=np.int64)
+        self.slot[active] = np.arange(len(active))
+        self.active = active
+        self.samples = 0
+        self.idx, self.mass = [], []
+        self.fire_cell, self.fire_age, self.fire_mass = [], [], []
+
+    def add(self, p: Particles) -> None:
+        self.samples += 1
+        ix, iy = cell_index(p.lon, p.lat)
+        ok = inside(ix, iy)
+        cell = (iy * NX + ix)[ok]
+        tag = p.tag[ok]
+        mass = p.mass_kg[ok].astype(np.float64)
+        age_h = p.age_s[ok].astype(np.float64) / 3600.0
+        age_class = np.searchsorted(KERNEL_AGE_H, age_h, side="right")
+        self.idx.append((self.slot[tag] * NCLASS + age_class) * NCELL + cell)
+        self.mass.append(mass)
+        fire = np.isin(tag, _FIRE_TAGS)
+        self.fire_cell.append(cell[fire])
+        self.fire_age.append(age_h[fire])
+        self.fire_mass.append(mass[fire])
+
+    def frame(self, met, k: int) -> dict[str, np.ndarray]:
+        """Hour-mean dry PM2.5 per emitting tag (µg/m³, float32), plus `haze`, `fire_age_h` and
+        `missing` (cells whose mixing height is missing; every tag is NaN there)."""
+        lon_c, lat_c = _cell_centres()
+        s0, s1 = met.sample(lon_c, lat_c, float(k)), met.sample(lon_c, lat_c, float(k + 1))
+        blh = 0.5 * (np.asarray(s0.blh, dtype=float) + np.asarray(s1.blh, dtype=float))
+        rh = 0.5 * (np.asarray(s0.rh, dtype=float) + np.asarray(s1.rh, dtype=float))
+        volume_m3 = cell_area_m2()[:, None] * blh
+
+        n = len(self.active)
+        mass = np.bincount(np.concatenate(self.idx), weights=np.concatenate(self.mass),
+                           minlength=n * NCLASS * NCELL).reshape(n, NCLASS, NY, NX)
+        out = {}
+        for slot in np.flatnonzero(mass.reshape(n, -1).any(axis=1)):
+            grid = sum(_box_spread(mass[slot, c], KERNEL_HALF_WIDTH[c]) for c in range(NCLASS))
+            grid = grid / self.samples
+            out[TAG_IDS[self.active[slot]]] = (grid * 1e9 / volume_m3).astype(np.float32)
+        out["fire_age_h"] = _weighted_median_by_cell(
+            np.concatenate(self.fire_cell), np.concatenate(self.fire_age),
+            np.concatenate(self.fire_mass), NCELL,
+        ).reshape(NY, NX).astype(np.float32)
+        out["haze"] = haze_factor(rh).astype(np.float32)
+        out["missing"] = np.isnan(blh)
+        return out
 
 
 # --- release ---
 
-def _release(emissions: Emissions, active: list[int], k: int, met, elev, rng, n: int) -> Particles:
-    """Parcels for emission hour `k`, released at time `k`: per emitting tag, `n` parcels in cells
-    drawn with probability proportional to emission, uniform within the cell, equal mass."""
+def _release(emissions: Emissions, budget: dict[int, int], k: int, met, elev, rng) -> Particles:
+    """Parcels for emission hour `k`, released at time `k`: per emitting tag, `budget[tag]`
+    parcels in cells drawn with probability proportional to emission, uniform within the cell,
+    equal mass."""
     cols = {"lon": [], "lat": [], "iy": [], "ix": [], "mass": [], "tag": []}
-    for ti in active:
+    for ti, n in budget.items():
         iy, ix, kg = emissions.hour(TAG_IDS[ti], k)
         if kg.size == 0:
             continue
@@ -174,14 +285,10 @@ def _release(emissions: Emissions, active: list[int], k: int, met, elev, rng, n:
         cols["tag"].append(np.full(n, ti, dtype=np.int16))
     if not cols["lon"]:
         return Particles.empty()
-    c = {k_: np.concatenate(v) for k_, v in cols.items()}
-    blh = met.sample(c["lon"], c["lat"], k).blh
+    c = {name: np.concatenate(v) for name, v in cols.items()}
+    blh = met.sample(c["lon"], c["lat"], float(k)).blh
     z = np.maximum(elev[c["iy"], c["ix"]], 0.0) + 0.5 * blh
-    m = len(c["lon"])
-    return Particles(
-        lon=c["lon"], lat=c["lat"], mass_kg=c["mass"], age_s=np.zeros(m, np.float32),
-        z_m=z.astype(np.float32), tag=c["tag"], mass0_kg=c["mass"].copy(),
-    )
+    return Particles.released(c["lon"], c["lat"], c["mass"], z, c["tag"])
 
 
 # --- storage ---
@@ -197,34 +304,59 @@ def _write_atomic(path: Path, write: Callable) -> None:
     os.replace(tmp, path)
 
 
+def _swap_into_place(work: Path, target: Path) -> None:
+    """Rename the finished `work` directory to `target`, replacing any existing one."""
+    old = None
+    if target.exists():
+        old = target.with_name(f".{target.name}.old-{uuid.uuid4().hex}")
+        os.replace(target, old)
+    os.replace(work, target)
+    if old is not None:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def _parse_time(value) -> datetime | None:
+    return None if value is None else datetime.fromisoformat(value)
+
+
 @dataclass(frozen=True)
 class RunResult:
-    """A finished run on disk; frames are read lazily."""
+    """A finished run on disk; frames are read lazily. Frame `h` is the mean over
+    [start + h, start + h + 1)."""
     out_dir: Path
     start: datetime
     hours: int
     tags: list[str]
     forecast_from: int | None
+    fires_assumed_from: int | None
     blh_estimated: bool
     step_stats: dict
+    made_at: datetime | None
+    format_version: int
+    constants: dict
 
     @classmethod
     def from_dir(cls, out_dir: Path) -> "RunResult | None":
-        """The run in `out_dir`, or None unless it is complete (run.json says so and every
-        frame file exists)."""
+        """The run in `out_dir`, or None unless run.json is readable, says `complete: true` and
+        every frame file exists. Validity for a date is `load_run`'s job."""
         try:
-            meta = json.loads((out_dir / "run.json").read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
+            meta = json.loads((Path(out_dir) / "run.json").read_text())
+            if meta.get("complete") is not True:
+                return None
+            result = cls(
+                out_dir=Path(out_dir), start=datetime.fromisoformat(meta["start"]),
+                hours=int(meta["hours"]), tags=list(meta["tags"]),
+                forecast_from=meta["forecast_from"],
+                fires_assumed_from=meta["fires_assumed_from"],
+                blh_estimated=bool(meta["blh_estimated"]), step_stats=dict(meta["step_stats"]),
+                made_at=_parse_time(meta["made_at"]), format_version=int(meta["format_version"]),
+                constants=dict(meta["constants"]),
+            )
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
-        if meta.get("complete") is not True:
+        if not all(_frame_path(result.out_dir, h).is_file() for h in range(result.hours)):
             return None
-        if not all(_frame_path(out_dir, h).is_file() for h in range(meta["hours"])):
-            return None
-        return cls(
-            out_dir=out_dir, start=datetime.fromisoformat(meta["start"]), hours=meta["hours"],
-            tags=list(meta["tags"]), forecast_from=meta["forecast_from"],
-            blh_estimated=meta["blh_estimated"], step_stats=dict(meta["step_stats"]),
-        )
+        return result
 
     def _read(self, h: int, names: list[str]) -> dict[str, np.ndarray]:
         if not 0 <= h < self.hours:
@@ -233,8 +365,8 @@ class RunResult:
             return {n: z[n] for n in names if n in z.files}
 
     def frame(self, h: int) -> dict[str, np.ndarray]:
-        """Dry PM2.5 (µg/m³) per tag, float32 (NY, NX); every tag present (non-emitting tags are
-        zero), NaN where the mixing height is missing."""
+        """Hour-mean dry PM2.5 (µg/m³) per tag, float32 (NY, NX); every tag present
+        (non-emitting tags are zero), NaN where the mixing height is missing."""
         z = self._read(h, [*self.tags, "missing"])
         blank = np.where(z.pop("missing"), np.float32(np.nan), np.float32(0.0))
         return {t: z[t] if t in z else blank.copy() for t in self.tags}
@@ -244,7 +376,8 @@ class RunResult:
         return self._read(h, ["haze"])["haze"]
 
     def fire_age_h(self, h: int) -> np.ndarray:
-        """Mass-weighted median age (hours) of fire parcels per cell; NaN where there are none."""
+        """Mass-weighted median age (hours) of fire parcels per cell over the hour's samples;
+        NaN where there are none."""
         return self._read(h, ["fire_age_h"])["fire_age_h"]
 
 
@@ -263,68 +396,84 @@ def simulate(
     spinup_h: int | None = None,
     particles_per_tag_hour: int | None = None,
     forecast_from: int | None = None,
+    fires_assumed_from: int | None = None,
+    made_at: datetime | None = None,
 ) -> RunResult:
     """Run `spinup_h + hours` hours from `start - spinup_h` and write `hours` frames to `out_dir`.
 
-    `emissions` and `met` are indexed from `start - spinup_h` (see the module docstring) and must
-    cover `spinup_h + hours` hours. Defaults: spinup_h = SPINUP_H, particles_per_tag_hour =
-    PARTICLES_PER_TAG_HOUR. Any earlier run in `out_dir` is invalidated first; run.json is
-    written last, so an interrupted run is never loaded.
+    `emissions` are indexed from `start - spinup_h` and must cover `spinup_h + hours` hours;
+    `met` must cover one hour more (the last frame's volume uses the mixing height at its end).
+    Defaults: spinup_h = SPINUP_H; parcels per tag-hour from `parcels_per_tag_hour`, or
+    `particles_per_tag_hour` for every tag if given (tests). The run is built in a temporary
+    sibling directory and renamed to `out_dir` when complete.
     """
     spinup_h = SPINUP_H if spinup_h is None else spinup_h
-    n = PARTICLES_PER_TAG_HOUR if particles_per_tag_hour is None else particles_per_tag_hour
     total = spinup_h + hours
-    if met.hours < total:
-        raise ValueError(f"met covers {met.hours} h, run needs {total} h")
+    if met.hours < total + 1:
+        raise ValueError(f"met covers {met.hours} h, run needs {total + 1} h")
     unknown = sorted(set(emissions.tags) - set(TAG_IDS))
     if unknown:
         raise ValueError(f"unknown emission tags: {', '.join(unknown)}")
     active = sorted(_TAG_INDEX[t] for t in emissions.tags)
+    budget = {
+        ti: particles_per_tag_hour if particles_per_tag_hour is not None
+        else parcels_per_tag_hour(TAG_IDS[ti])
+        for ti in active
+    }
 
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "run.json").unlink(missing_ok=True)
-    for old in [*out_dir.glob("frame_*.npz"), *out_dir.glob("*.tmp")]:
-        old.unlink()
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    work = out_dir.with_name(f".{out_dir.name}.tmp-{uuid.uuid4().hex}")
+    work.mkdir()
+    try:
+        rng = np.random.default_rng(seed)
+        p = Particles.empty()
+        stats = {"left_domain": 0, "depleted": 0, "missing_met": 0}
+        peak = 0
+        for k in range(total):
+            progress(0.97 * k / total, f"simulating hour {k + 1}/{total}")
+            p = Particles.concat([p, _release(emissions, budget, k, met, elev, rng)])
+            peak = max(peak, len(p))
+            acc = _HourMean(active) if k >= spinup_h else None
+            for i in range(STEPS_PER_HOUR):
+                if acc is not None:
+                    acc.add(p)
+                p, s = step(p, met, elev, k + i * DT_S / 3600.0, rng)
+                for name in stats:
+                    stats[name] += getattr(s, name)
+            if acc is not None:
+                arrays = acc.frame(met, k)
+                _write_atomic(_frame_path(work, k - spinup_h),
+                              lambda f, a=arrays: np.savez_compressed(f, **a))
 
-    rng = np.random.default_rng(seed)
-    p = Particles.empty()
-    stats = {"left_domain": 0, "depleted": 0, "missing_met": 0}
-    peak = 0
-    for k in range(total):
-        progress(0.98 * k / total, f"simulating hour {k + 1}/{total}")
-        if k >= spinup_h:
-            arrays = _grid(p, met, float(k))
-            _write_atomic(_frame_path(out_dir, k - spinup_h),
-                          lambda f, a=arrays: np.savez_compressed(f, **a))
-        if k == total - 1:
-            break
-        p = Particles.concat([p, _release(emissions, active, k, met, elev, rng, n)])
-        peak = max(peak, len(p))
-        for i in range(STEPS_PER_HOUR):
-            p, s = step(p, met, elev, k + i * DT_S / 3600.0, rng)
-            for name in stats:
-                stats[name] += getattr(s, name)
-
-    progress(0.99, "writing")
-    meta = {
-        "start": start.isoformat(),
-        "hours": hours,
-        "forecast_from": forecast_from,
-        "tags": TAG_IDS,
-        "seed": seed,
-        "spinup_h": spinup_h,
-        "particles_per_tag_hour": n,
-        "dt_s": DT_S,
-        "blh_estimated": bool(met.blh_estimated),
-        "step_stats": stats,
-        "peak_parcels": peak,
-        "complete": True,
-    }
-    _write_atomic(out_dir / "run.json", lambda f: f.write(json.dumps(meta, indent=1).encode()))
+        progress(0.98, "writing")
+        meta = {
+            "format_version": FORMAT_VERSION,
+            "start": start.isoformat(),
+            "hours": hours,
+            "frame_semantics": "hour_mean",
+            "forecast_from": forecast_from,
+            "fires_assumed_from": fires_assumed_from,
+            "made_at": None if made_at is None else _utc(made_at).isoformat(),
+            "tags": TAG_IDS,
+            "seed": seed,
+            "parcels_per_tag_hour": {TAG_IDS[ti]: n for ti, n in budget.items()},
+            "constants": constants_snapshot(),
+            "blh_estimated": bool(met.blh_estimated),
+            "step_stats": stats,
+            "peak_parcels": peak,
+            "complete": True,
+        }
+        meta["constants"]["SPINUP_H"] = spinup_h
+        _write_atomic(work / "run.json", lambda f: f.write(json.dumps(meta, indent=1).encode()))
+        _swap_into_place(work, out_dir)
+    finally:
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
     progress(1.0, "done")
     result = RunResult.from_dir(out_dir)
-    assert result is not None
+    if result is None:
+        raise RuntimeError(f"run written to {out_dir} could not be read back")
     return result
 
 
@@ -332,17 +481,30 @@ def _run_dir(day: date) -> Path:
     return config.data_dir() / "runs" / day.isoformat()
 
 
-def load_run(day: date) -> RunResult | None:
-    """The complete stored run for `day`, or None."""
-    return RunResult.from_dir(_run_dir(day))
+def load_run(day: date, now: datetime) -> RunResult | None:
+    """The stored run for `day` if it is still valid at `now`, else None (the caller re-runs).
+
+    Valid means: complete; same format version and constants snapshot as the current code;
+    its start equals `run_window(day, now)`'s; and either it was final when made (made at least
+    FINAL_AFTER after its window ended) or it was made less than FRESH_FOR before `now`.
+    """
+    res = RunResult.from_dir(_run_dir(day))
+    if res is None or res.made_at is None:
+        return None
+    if res.format_version != FORMAT_VERSION or res.constants != constants_snapshot():
+        return None
+    if res.start != run_window(day, now)[0]:
+        return None
+    final = res.made_at >= res.start + timedelta(hours=res.hours) + FINAL_AFTER
+    if not (final or _utc(now) - res.made_at < FRESH_FOR):
+        return None
+    return res
 
 
 def run_date(day: date, now: datetime, progress: Progress = _noop) -> RunResult:
-    """The run for `day`: the stored one if complete, otherwise fetch inputs and simulate.
-
-    Upstream errors propagate; a failed run leaves no complete marker behind.
-    """
-    cached = load_run(day)
+    """The run for `day`: the stored one if still valid (see `load_run`), otherwise fetch inputs
+    and simulate. Upstream errors propagate; a failed run leaves the stored state unchanged."""
+    cached = load_run(day, now)
     if cached is not None:
         progress(1.0, "cached")
         return cached
@@ -353,12 +515,12 @@ def run_date(day: date, now: datetime, progress: Progress = _noop) -> RunResult:
     emissions = fire_emissions(sim_start, total, now)
     emissions.merge(inventory_emissions())
     progress(0.05, "fetching weather")
-    met = MetField(fetch_met(sim_start, total, now))
+    met = MetField(fetch_met(sim_start, total + 1, now))
     progress(0.1, "terrain")
     elev = elevation()
     return simulate(
         emissions, met, elev, start, WINDOW_H, _run_dir(day),
         progress=lambda f, s: progress(1.0 if f >= 1.0 else 0.12 + 0.88 * f, s),
-        spinup_h=SPINUP_H, particles_per_tag_hour=PARTICLES_PER_TAG_HOUR,
-        forecast_from=forecast_from,
+        spinup_h=SPINUP_H, forecast_from=forecast_from,
+        fires_assumed_from=fires_assumed_from(start, now, WINDOW_H), made_at=now,
     )

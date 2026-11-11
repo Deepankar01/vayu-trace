@@ -115,3 +115,14 @@ Z_RELAX_S = 21600
 # not fitted. The cap stops the 1 / (1 - RH) term diverging near saturation (f <= 5.51).
 HAZE_GROWTH_COEFF = 0.25
 HAZE_RH_CAP = 0.95
+
+# Age-dependent box kernel applied to each tag's gridded parcel MASS before dividing by volume
+# (vayu.sim.run). Parcels younger than KERNEL_AGE_H[0] hours stay in their cell; parcels aged
+# KERNEL_AGE_H[0] to KERNEL_AGE_H[1] hours are spread over a 3 x 3 box, older ones over 5 x 5
+# (half widths KERNEL_HALF_WIDTH, in cells, for the three age classes). Mass is spread equally
+# over the in-domain cells of the box, so it is conserved exactly at edges and corners.
+# A variance-reduction choice (a finite number of parcels otherwise gives shot noise), not
+# physics and not fitted; for aged parcels it amounts to a horizontal position uncertainty of
+# roughly 10-25 km (one to two 0.1 degree cells).
+KERNEL_AGE_H = (6, 24)
+KERNEL_HALF_WIDTH = (0, 1, 2)

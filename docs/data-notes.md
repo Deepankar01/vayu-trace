@@ -115,42 +115,54 @@ EDGAR's country table splits road transport (1A3b, inside TRO) into `1.A.3.b_noR
 
 ## Simulation run timing (`server/vayu/sim/run.py`)
 
-Real run for 2023-11-05 (window 2023-11-03 00Z to 2023-11-08 23Z, 144 output hours plus 48 h spin-up = 192 simulated hours, 6 steps per hour), on the development Mac (Apple silicon), measured on 2026-11-11.
+Real run for 2023-11-05 (window 2023-11-03 00Z to 2023-11-08 23Z: 144 output hours plus 48 h spin-up = 192 simulated hours, 6 steps per hour), on the development Mac (Apple silicon), measured on 2026-11-11.
 
-| Stage | `PARTICLES_PER_TAG_HOUR` = 200 (plan value) | = 100 (adopted) |
+### Current configuration (format version 2)
+Frames are hour means (6 sub-step samples per hour), each tag's mass grid is smoothed with the age-dependent box kernel (none under 6 h, 3 x 3 from 6 to 24 h, 5 x 5 beyond), parcels per tag-hour are 100, or 400 for the four `*_rest_of_india` sector tags (3 of them emit; dust has no data), and `MetField.sample` has a faster path for a single sample time.
+
+| Stage | cold weather cache | warm cache |
 |---|---|---|
-| fetching fires + inventory | 0.3 s (FIRMS days already cached) | 0.2 s (cached) |
-| fetching weather (Open-Meteo archive, 22 batches) | 10.0 s (part of the batches already cached by an earlier attempt that hit HTTP 429) | 0.2 s (cached) |
-| terrain | 20.3 s (first download of the tiles) | 0.0 s (cached) |
-| simulating + writing frames | 128.0 s | 68.2 s |
-| **wall** | **158.6 s** | **68.7 s** |
+| fetching fires + inventory | 0.2 s | 0.4 s |
+| fetching weather (Open-Meteo archive, 22 batches, 193 hours) | 12.6 s (after one attempt that failed on HTTP 429, see below) | 0.5 s |
+| terrain | 0.0 s (cached) | 0.0 s |
+| simulating + writing frames | 111.1 s | 113.2 s |
+| **wall** | **124.1 s** | **114.1 s** |
 
-Profile of the 200-parcel simulation stage (cProfile, 129.6 s): `particles.step` 116 s, of which `MetField.sample` 82 s, terrain look-ups (`_ground`/`cell_index`) 20 s; writing compressed frames 6.2 s (zlib); gridding 5.0 s; releases 1.8 s. Run time is therefore close to proportional to the number of live parcels.
+The warm run is inside the 120 s allowance but well above the one-minute target; the parcel count was not cut further. Profile of the simulation stage (cProfile, 114.8 s): `particles.step` 73.6 s, of which terrain look-ups (`_ground`/`cell_index`) 30 s and `MetField.sample` 23 s (82 s before the fast path, with fewer parcels); writing compressed frames 14.8 s (zlib; smoothed fields compress less well than the old sparse ones); building frames 17.6 s, of which the fire-age weighted median 6.7 s; accumulating sub-step samples most of the rest.
 
-Decision (spec 7.6 rule): the plan's 200 parcels per tag-hour took 128 s, above the 90 s budget, so `PARTICLES_PER_TAG_HOUR` was lowered to 100 rather than merging `rest_of_india` sectors. A warm-cache run takes 68.7 s. A cold first run of a new date adds the network fetches: the weather archive (about 10-30 s for 22 batches, and Open-Meteo's free tier answered HTTP 429 on the first attempt here, which the client's backoff did not outlast) and, once per installation, the terrain tiles (20 s). Rewriting `MetField.sample`'s gather to be faster (same values) would be the next lever; it was not done here.
+Peak live parcels 286,987. Dropped parcels over the run: left the domain 12,277; depleted below 1 % of release mass 334,929; missing met 0. `blh_estimated` false: the archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window.
 
-| | 200 parcels | 100 parcels |
-|---|---|---|
-| peak live parcels | 430,182 | 215,047 |
-| dropped: left domain | 7,419 | 3,714 |
-| dropped: depleted below 1 % of release mass | 456,748 | 228,435 |
-| dropped: missing met | 0 | 0 |
-| `blh_estimated` | False | False |
-
-The Open-Meteo archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window, so no mixing height was estimated (`blh_estimated` false).
+Open-Meteo rate limits: the free archive answers HTTP 429 when all 22 full-domain batches are requested at once, and the client's backoff (1+2+4+8+16 s) does not outlast it; a retry a minute or so later completes from the partly filled cache. Changing the requested hours (here 192 to 193) changes every cache key and triggers this again. A cold first run of a new date therefore needs one or two attempts, plus 20 s for the terrain tiles once per installation.
 
 Most parcels end by depletion, not by leaving the domain: with mixing heights near the 100 m floor at night, dry deposition at 0.2 cm/s removes about 7 % of a parcel's mass per hour, so parcels fall below 1 % of their release mass within a few days.
 
+### Sampling noise
+Measured from the stored runs at four city cells. "Dominant tag" is the tag with the largest window-mean concentration there; "zero hours" is the share of the 144 hours in which that tag's value is exactly zero; "CV vs 3 h" is the standard deviation of (hourly total minus its centred 3-hour running mean) divided by the mean of the running mean. Lower is smoother.
+
+| City (cell) | dominant tag | zero hours, before | zero hours, now | CV vs 3 h, before | CV vs 3 h, now | window mean before / now, µg/m³ |
+|---|---|---|---|---|---|---|
+| Delhi (77.21 E, 28.61 N) | industry_delhi_ncr | 0.0 % | 0.0 % | 0.18 | 0.15 | 114.1 / 147.3 |
+| Patna (85.14 E, 25.61 N) | residential_bihar | 8.3 % | 0.0 % | 0.36 | 0.20 | 43.0 / 43.5 |
+| Lucknow (80.95 E, 26.85 N) | residential_uttar_pradesh | 10.4 % | 0.0 % | 0.45 | 0.26 | 29.3 / 41.2 |
+| Mumbai (72.88 E, 19.08 N) | industry_rest_of_india | 45.8 % | 0.0 % | 0.86 | 0.24 | 95.0 / 115.9 |
+
+"Before" is the version-1 run: instantaneous snapshot at each whole hour, no kernel, 100 parcels for every tag. fire_punjab at the Delhi cell is now non-zero in all 144 hours. Window means rose because each frame now averages over the hour including that hour's fresh release (parcels aged 0 to 50 minutes, still concentrated near their sources), where the old whole-hour snapshot saw parcels at least an hour old.
+
+Plain statement of sampling uncertainty: every value is estimated from a finite number of parcels, so it carries sampling noise as well as model error. A residual hour-to-hour scatter of roughly 15-25 % at these cells (the CV column) is mostly sampling noise; small contributions (a few µg/m³, or tags far from a city) are less reliable than large local ones; the kernel spreads aged parcels over 10-25 km, so sharp gradients from distant sources are blurred by design. Differences between hours or between tags smaller than about a quarter of the value should not be interpreted.
+
 ### Sanity check, not tuned against anything
-Simulated dry PM2.5 (sum over all tags) at the Delhi cell (77.21 E, 28.61 N; cell ix 112, iy 226) in the 100-parcel run. Directly emitted PM2.5 only, no background or secondary aerosol; nothing was adjusted in response to these numbers.
+Simulated dry PM2.5 (hour mean, sum over all tags) at the Delhi cell (ix 112, iy 226). Directly emitted PM2.5 only, no background or secondary aerosol; nothing was adjusted in response to these numbers.
 
-| UTC | PM2.5 µg/m³ | top three tags |
+| Hour starting (UTC) | PM2.5 µg/m³ | top three tags |
 |---|---|---|
-| 11-03 00Z | 187.1 | industry_delhi_ncr 82.1, residential_delhi_ncr 53.8, fire_punjab 29.2 |
-| 11-03 06Z | 16.4 | industry_delhi_ncr 8.6, residential_delhi_ncr 5.7, fire_punjab 1.0 |
-| 11-03 12Z | 129.6 | residential_delhi_ncr 66.7, industry_delhi_ncr 36.3, fire_punjab 19.8 |
-| 11-05 00Z | 129.3 | fire_punjab 41.7, residential_delhi_ncr 37.1, industry_delhi_ncr 23.9 |
-| 11-06 00Z | 249.5 | residential_delhi_ncr 115.0, industry_delhi_ncr 86.0, fire_punjab 23.7 |
-| 11-08 23Z | 187.0 | industry_delhi_ncr 78.8, residential_delhi_ncr 53.0, fire_punjab 31.7 |
+| 11-03 00Z | 272.2 | industry_delhi_ncr 117.6, residential_delhi_ncr 63.7, fire_punjab 61.5 |
+| 11-03 06Z | 24.3 | industry_delhi_ncr 10.6, residential_delhi_ncr 7.8, fire_punjab 4.5 |
+| 11-03 12Z | 213.5 | residential_delhi_ncr 110.0, industry_delhi_ncr 84.7, fire_punjab 10.9 |
+| 11-05 00Z | 208.9 | industry_delhi_ncr 78.9, residential_delhi_ncr 59.9, fire_punjab 49.6 |
+| 11-06 00Z | 307.9 | industry_delhi_ncr 148.7, residential_delhi_ncr 133.8, industry_haryana 12.1 |
+| 11-08 23Z | 248.1 | residential_delhi_ncr 88.7, industry_delhi_ncr 88.4, fire_punjab 44.8 |
 
-Window mean 114.1 µg/m³; top contributors over the window: industry_delhi_ncr 48.3, residential_delhi_ncr 42.0, fire_punjab 8.3, industry_haryana 5.6, residential_haryana 2.9. The diurnal swing (night peaks, midday lows near 16-23 µg/m³) follows the mixing height. Vehicles do not reach the top three, consistent with EDGAR's small road-transport total (see the inventory caveats above).
+Window mean 147.3 µg/m³; top contributors over the window: industry_delhi_ncr 65.2, residential_delhi_ncr 58.0, fire_punjab 9.7. The diurnal swing (night peaks, midday lows) follows the mixing height. Vehicles do not reach the top three, consistent with EDGAR's small road-transport total (see the inventory caveats above).
+
+### History
+Version 1 (first commit of this task) used whole-hour snapshots and no kernel. With 200 parcels for every tag the simulation stage took 128 s (cold wall 158.6 s; `MetField.sample` 82 s of it), so the default was lowered to 100 (warm wall 68.7 s, peak 215,047 parcels). That run's sampling noise (table above, "before") led to the current configuration.

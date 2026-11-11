@@ -147,7 +147,13 @@ class MetField:
         every output is NaN there). A neighbour with zero weight never contaminates a result.
         `blh` is never NaN from missing data (null values are replaced by the estimate), so it
         is NaN only for NaN inputs or when the estimate's inputs (temperature, wind) are missing.
+
+        A scalar, non-NaN `t_hours` (what the particle step uses) takes a faster path that
+        interpolates the lattice in time once and then bilinearly in space; it gives the same
+        values up to float rounding and the same missing-data behaviour.
         """
+        if np.ndim(t_hours) == 0 and not np.isnan(t_hours):
+            return self._sample_at(lon, lat, float(t_hours))
         lon, lat, t = np.broadcast_arrays(
             np.asarray(lon, dtype=float), np.asarray(lat, dtype=float),
             np.asarray(t_hours, dtype=float),
@@ -172,3 +178,43 @@ class MetField:
                     out = out + np.where(w > 0, d[:, tt, yy, xx] * w, 0.0)
         out = np.where(bad, np.nan, out)
         return MetSample(*(out[i].astype(float) for i in range(len(self._FIELDS))))
+
+    def _sample_at(self, lon, lat, t: float) -> MetSample:
+        """`sample` at one time `t` (not NaN): time interpolation on the lattice, then bilinear.
+
+        A lattice value contributes only with positive time weight and positive spatial weight,
+        so the NaN rules match the general path exactly.
+        """
+        ft = min(max(t, 0.0), self.hours - 1)
+        it = min(int(ft), max(self.hours - 2, 0))
+        wt = ft - it
+        it1 = min(it + 1, self.hours - 1)
+        nf = len(self._FIELDS)
+        slab = np.zeros((nf, NLAT * NLON))
+        for tt, w in ((it, 1.0 - wt), (it1, wt)):
+            if w > 0:
+                slab = slab + self._data[:, tt].reshape(nf, -1).astype(float) * w
+        slab = np.ascontiguousarray(slab.T)  # (lattice point, field): one row per gather
+        has_nan = bool(np.isnan(slab).any())
+
+        lon, lat = np.broadcast_arrays(np.asarray(lon, dtype=float), np.asarray(lat, dtype=float))
+        bad = np.isnan(lon) | np.isnan(lat)
+        lon, lat = (np.where(bad, 0.0, x) for x in (lon, lat))
+        fx = np.clip((lon - self.raw.lon[0]) / MET_STEP_DEG, 0, NLON - 1)
+        fy = np.clip((lat - self.raw.lat[0]) / MET_STEP_DEG, 0, NLAT - 1)
+        ix = np.minimum(fx.astype(int), NLON - 2)
+        iy = np.minimum(fy.astype(int), NLAT - 2)
+        wx, wy = fx - ix, fy - iy
+        base = iy * NLON + ix
+
+        out = np.zeros(base.shape + (nf,))
+        for dy, wy_ in ((0, 1 - wy), (1, wy)):
+            for dx, wx_ in ((0, 1 - wx), (1, wx)):
+                w = wy_ * wx_
+                vals = slab.take(base + (dy * NLON + dx), axis=0)
+                vals *= w[..., None]
+                if has_nan:  # a zero-weight corner must not contribute its NaN
+                    vals[w <= 0] = 0.0
+                out += vals
+        out[bad] = np.nan
+        return MetSample(*(out[..., i].astype(float) for i in range(nf)))

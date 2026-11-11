@@ -23,8 +23,8 @@ DEG_PER_RAD = 180.0 / np.pi
 MIN_MASS_FRACTION = 0.01  # parcels below this fraction of their release mass are dropped
 
 _DTYPES = {
-    "lon": np.float64, "lat": np.float64, "mass_kg": np.float32, "age_s": np.float32,
-    "z_m": np.float32, "tag": np.int16, "mass0_kg": np.float32,
+    "lon": np.float64, "lat": np.float64, "age_s": np.float32,
+    "z_m": np.float32, "tag": np.int16, "mass0_kg": np.float32, "frac": np.float32,
 }
 
 
@@ -33,21 +33,41 @@ class Particles:
     """Parcel state, one array element per parcel (all arrays the same length).
 
     lon, lat  degrees (float64: a 600 s move is a small fraction of a 0.1 degree cell)
-    mass_kg   current PM2.5 mass; mass0_kg the mass at release
     age_s     seconds since release
     z_m       parcel height above sea level, m (the centre of the mixed layer it travels in)
     tag       index into the emission-tag catalogue (int16)
+    mass0_kg  PM2.5 mass at release
+    frac      fraction of the release mass still airborne (1 at release); current mass is
+              `mass_kg = mass0_kg * frac`. Transport and the depletion drop depend on `frac`
+              only, never on the mass itself, so scaling emissions by any factor gives identical
+              trajectories and survival.
     """
     lon: np.ndarray
     lat: np.ndarray
-    mass_kg: np.ndarray
     age_s: np.ndarray
     z_m: np.ndarray
     tag: np.ndarray
     mass0_kg: np.ndarray
+    frac: np.ndarray
 
     def __len__(self) -> int:
         return len(self.lon)
+
+    @property
+    def mass_kg(self) -> np.ndarray:
+        """Current PM2.5 mass (float32), derived from release mass and surviving fraction."""
+        return self.mass0_kg * self.frac
+
+    @classmethod
+    def released(cls, lon, lat, mass_kg, z_m, tag) -> "Particles":
+        """Fresh parcels: age 0, full release mass."""
+        n = len(lon)
+        return cls(
+            lon=np.asarray(lon, dtype=np.float64), lat=np.asarray(lat, dtype=np.float64),
+            age_s=np.zeros(n, np.float32), z_m=np.asarray(z_m, dtype=np.float32),
+            tag=np.asarray(tag, dtype=np.int16), mass0_kg=np.asarray(mass_kg, dtype=np.float32),
+            frac=np.ones(n, np.float32),
+        )
 
     @classmethod
     def empty(cls) -> "Particles":
@@ -71,7 +91,7 @@ class StepStats:
     """Parcels dropped in one step, by reason. Each parcel is counted once: missing met is
     checked first, then leaving the domain, then depletion."""
     left_domain: int  # position after the move is outside the grid
-    depleted: int  # mass below MIN_MASS_FRACTION of release mass
+    depleted: int  # surviving fraction below MIN_MASS_FRACTION
     missing_met: int  # met sample (u, v or blh) was NaN at the start position
 
 
@@ -107,15 +127,15 @@ def step(
        Moves up to two cells long are therefore checked against every cell they cross; only a
        single move longer than two cells can jump a one-cell ridge.
     3. z_m relaxes toward terrain(new position) + blh/2 with time constant Z_RELAX_S.
-    4. If `deposition`: mass *= exp(-(V_DEP/blh + WASHOUT_A * precip**WASHOUT_B) * DT), with blh
+    4. If `deposition`: frac *= exp(-(V_DEP/blh + WASHOUT_A * precip**WASHOUT_B) * DT), with blh
        and precip from the start position; precip <= 0 gives no washout.
-    5. age += DT. Drop parcels outside the domain or below 1 % of their release mass.
+    5. age += DT. Drop parcels outside the domain or with frac below MIN_MASS_FRACTION.
 
     All randomness comes from `rng`. The diffusivity K_H_M2_S is read from this module at call
     time.
 
     Aliasing: the returned `Particles` may share arrays with the input `p` (always `tag` and
-    `mass0_kg`; also `mass_kg` when `deposition=False`; all fields can be shared when no parcel
+    `mass0_kg`; also `frac` when `deposition=False`; all fields can be shared when no parcel
     is dropped and a field is unchanged). Callers must not mutate either object's arrays in
     place.
     """
@@ -169,23 +189,23 @@ def step(
     z = p.z_m + (target - p.z_m) * (1.0 - np.exp(-DT_S / Z_RELAX_S))
 
     # 4. Deposition.
-    mass = p.mass_kg
+    frac = p.frac
     if deposition:
         rain = np.nan_to_num(precip, nan=0.0)
         wet = rain > 0
         washout = np.zeros(n)
         washout[wet] = WASHOUT_A * np.power(rain[wet], WASHOUT_B)
-        mass = mass * np.exp(-(V_DEP_M_S / blh + washout) * DT_S)
+        frac = frac * np.exp(-(V_DEP_M_S / blh + washout) * DT_S)
 
     # 5. Age and drop.
     out = Particles(
         lon=lon, lat=lat,
-        mass_kg=mass.astype(np.float32, copy=False),
         age_s=(p.age_s + np.float32(DT_S)).astype(np.float32, copy=False),
         z_m=z.astype(np.float32, copy=False),
         tag=p.tag, mass0_kg=p.mass0_kg,
+        frac=frac.astype(np.float32, copy=False),
     )
-    depleted = in_domain & (out.mass_kg < MIN_MASS_FRACTION * out.mass0_kg)
+    depleted = in_domain & (out.frac < MIN_MASS_FRACTION)
     keep = in_domain & ~depleted
     stats = StepStats(
         missing_met=missing_met,

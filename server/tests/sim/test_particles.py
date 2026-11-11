@@ -43,9 +43,9 @@ def make(lon, lat, mass=1.0, z=250.0):
     n = lon.size
     return Particles(
         lon=lon.copy(), lat=lat,
-        mass_kg=np.full(n, mass, np.float32), age_s=np.zeros(n, np.float32),
+        age_s=np.zeros(n, np.float32),
         z_m=np.full(n, z, np.float32), tag=np.zeros(n, np.int16),
-        mass0_kg=np.full(n, mass, np.float32),
+        mass0_kg=np.full(n, mass, np.float32), frac=np.ones(n, np.float32),
     )
 
 
@@ -174,7 +174,7 @@ def test_seeded_rng_is_deterministic():
     a, sa = run(make(np.full(500, 80.0), 22.0), met, elev, hours=6, seed=42)
     b, sb = run(make(np.full(500, 80.0), 22.0), met, elev, hours=6, seed=42)
     c, _ = run(make(np.full(500, 80.0), 22.0), met, elev, hours=6, seed=43)
-    for f in ("lon", "lat", "mass_kg", "age_s", "z_m", "tag", "mass0_kg"):
+    for f in ("lon", "lat", "age_s", "z_m", "tag", "mass0_kg", "frac"):
         np.testing.assert_array_equal(getattr(a, f), getattr(b, f))
     assert sa == sb
     assert not np.array_equal(a.lon, c.lon)
@@ -215,7 +215,7 @@ def test_zero_or_negative_precip_gives_no_washout(precip):
 
 def test_depleted_parcels_dropped():
     p0 = make(np.full(4, 80.0), 22.0, mass=1.0)
-    p0.mass_kg[:2] = 0.0099  # below 1 % of the 1.0 kg release mass
+    p0.frac[:2] = 0.0099  # below 1 % of the release mass
     p, s = step(p0, StubMet(), flat(), 0.0, np.random.default_rng(0))
     assert len(p) == 2
     assert s == StepStats(left_domain=0, depleted=2, missing_met=0)
