@@ -1,8 +1,9 @@
 /**
  * App keyboard shortcuts: Space play/pause, Left/Right one hour, Escape cancels drop arming or
- * closes the drop dialog (not while it is submitting). While the dialog is open only Escape is
- * handled. Keys typed into a form control (and Space on a focused button, which
- * the button handles itself) are never captured.
+ * closes the drop dialog (not while it is submitting). While any modal dialog is open
+ * (`aria-modal="true"`: the drop dialog, the Validation dialog) only Escape is handled. Keys typed
+ * into a form control, Space on a focused button (which the button handles itself), and keys whose
+ * target is inside the map (MapLibre pans with the arrows there) are never captured.
  */
 import { useEffect } from "react";
 import { useDropStore } from "../map/dropStore";
@@ -16,7 +17,7 @@ interface KeyInfo {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
-  /** The drop-source dialog is open: only Escape is a shortcut. */
+  /** A modal dialog is open (drop source, Validation): only Escape is a shortcut. */
   dialogOpen?: boolean;
 }
 
@@ -28,10 +29,22 @@ export function isFormTarget(target: EventTarget | null): boolean {
   return FORM_TAGS.has(target.tagName) || target.isContentEditable;
 }
 
+/** The map's own container (MapLibre's canvas container, inside `.vayu-map`). */
+export const MAP_SELECTOR = ".vayu-map";
+
+export function isMapTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest(MAP_SELECTOR) !== null;
+}
+
+/** True while any modal dialog is in the document. */
+export function modalOpen(doc: Document = document): boolean {
+  return doc.querySelector('[aria-modal="true"]') !== null;
+}
+
 /** The shortcut for a key event, or null to leave it alone. */
 export function keyAction(e: KeyInfo): KeyAction | null {
   if (e.key === "Escape") return "escape";
-  if (e.dialogOpen || e.metaKey || e.ctrlKey || e.altKey || isFormTarget(e.target)) return null;
+  if (e.dialogOpen || e.metaKey || e.ctrlKey || e.altKey || isFormTarget(e.target) || isMapTarget(e.target)) return null;
   const onButton = e.target instanceof HTMLElement && (e.target.tagName === "BUTTON" || e.target.getAttribute("role") === "switch");
   if (e.key === " ") return onButton ? null : "toggle";
   if (e.key === "ArrowRight") return "next";
@@ -44,7 +57,7 @@ export function useKeyboard(store: AppStore): void {
     const onKey = (e: KeyboardEvent) => {
       const action = keyAction({
         key: e.key, target: e.target, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey,
-        dialogOpen: useDropStore.getState().pending !== null,
+        dialogOpen: useDropStore.getState().pending !== null || modalOpen(),
       });
       if (!action) return;
       const s = store.getState();

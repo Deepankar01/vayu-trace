@@ -12,6 +12,7 @@ import { useDropStore } from "./dropStore";
 import { useMapStatus } from "./mapStatus";
 import { INITIAL_VIEW, LAYER_IDS, MapView, type MapReadyInfo } from "./MapView";
 import { MapScene, type SceneEnv } from "./mapScene";
+import { TransientProblem } from "./transientProblem";
 import { useMapAnimation } from "./useMapAnimation";
 import "./map.css";
 
@@ -88,7 +89,14 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
     env.current.device = device;
   }, []);
 
-  const onError = useCallback((message: string) => latest.current.onProblem?.("map", message), []);
+  // MapLibre errors (e.g. one failed tile) are transient: shown once, cleared after 10 s
+  const mapProblem = useRef<TransientProblem | null>(null);
+  useEffect(() => {
+    const p = new TransientProblem((m) => latest.current.onProblem?.("map", m));
+    mapProblem.current = p;
+    return () => p.dispose();
+  }, []);
+  const onError = useCallback((message: string) => mapProblem.current?.raise(message), []);
 
   useEffect(() => {
     if (!armed) return;

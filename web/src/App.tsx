@@ -16,6 +16,8 @@ import "./panels/panels.css";
 import { useStore } from "./state/store";
 
 const DEFAULT_CITY = "delhi";
+/** Map-scene problems the user can dismiss (map errors also clear themselves after 10 s). */
+const DISMISSIBLE = new Set(["map"]);
 
 /** `?date=YYYY-MM-DD`, else today's UTC date. */
 function runDate(): string {
@@ -78,9 +80,12 @@ export default function App() {
     useDropStore.getState().place({ lon, lat, x, y });
   }, []);
 
-  const shownProblems = [
-    frameError, firesError, !dialogOpen && sourceError ? `added source: ${sourceError}` : null, ...Object.values(problems),
-  ].filter(Boolean);
+  const shownProblems: { key: string; message: string }[] = [
+    { key: "frame", message: frameError },
+    { key: "fires", message: firesError },
+    { key: "source", message: !dialogOpen && sourceError ? `added source: ${sourceError}` : null },
+    ...Object.entries(problems).map(([key, message]) => ({ key: `p:${key}`, message })),
+  ].filter((p): p is { key: string; message: string } => Boolean(p.message));
 
   return (
     <>
@@ -107,7 +112,14 @@ export default function App() {
         )}
         {shownProblems.length > 0 && (
           <div className="panel problems" role="status">
-            {shownProblems.map((m, i) => <div key={i}>{m}</div>)}
+            {shownProblems.map((p) => (
+              <div key={p.key}>
+                {p.message}
+                {DISMISSIBLE.has(p.key.slice(2)) && p.key.startsWith("p:") && (
+                  <button type="button" className="toast-x" aria-label="Dismiss" onClick={() => onProblem(p.key.slice(2), null)}>×</button>
+                )}
+              </div>
+            ))}
           </div>
         )}
         <PanelBoundary name="Timeline" resetKey={build}><Timeline /></PanelBoundary>
