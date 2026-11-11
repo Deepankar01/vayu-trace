@@ -117,147 +117,85 @@ EDGAR's country table splits road transport (1A3b, inside TRO) into `1.A.3.b_noR
 
 Real run for 2023-11-05 (window 2023-11-03 00Z to 2023-11-08 23Z: 144 output hours plus 48 h spin-up = 192 simulated hours, 6 steps per hour), on the development Mac (Apple silicon), measured on 2026-11-11.
 
-### Current configuration (format version 2)
-Frames are hour means (6 sub-step samples per hour), each tag's mass grid is smoothed with the age-dependent box kernel (none under 6 h, 3 x 3 from 6 to 24 h, 5 x 5 beyond), parcels per tag-hour are 100, or 400 for the four `*_rest_of_india` sector tags (3 of them emit; dust has no data), and `MetField.sample` has a faster path for a single sample time.
+### Current configuration (format version 3)
+- Frames are trapezoid hour means over the seven states in an hour: 1/2 weight on the post-release state at the start, 1 on each of the five intermediate states, 1/2 on the state after the sixth step, divided by 6.
+- Each tag's mass grid is smoothed with the age-dependent box kernel: none under 6 h, 3 x 3 from 6 to 24 h, 5 x 5 beyond.
+- Parcels per tag-hour are 100, or 400 for the four `*_rest_of_india` sector tags (3 of them emit; dust has no data).
+- `MetField.sample` has a faster path for a single sample time.
+- The seven terrain look-ups in each step share their cell-index computations. `step` output is bit-identical to before, and a test asserts it.
 
-| Stage | cold weather cache | warm cache |
-|---|---|---|
-| fetching fires + inventory | 0.2 s | 0.4 s |
-| fetching weather (Open-Meteo archive, 22 batches, 193 hours) | 12.6 s (after one attempt that failed on HTTP 429, see below) | 0.5 s |
-| terrain | 0.0 s (cached) | 0.0 s |
-| simulating + writing frames | 111.1 s | 113.2 s |
-| **wall** | **124.1 s** | **114.1 s** |
+| Stage | warm cache |
+|---|---|
+| fetching fires + inventory | 0.3 s |
+| fetching weather (Open-Meteo archive, 22 batches, 193 hours) | 0.4 s |
+| terrain | 0.0 s |
+| simulating + writing frames | 52.8 s |
+| **wall** | **53.5 s** |
 
-The warm run is inside the 120 s allowance but well above the one-minute target; the parcel count was not cut further. Profile of the simulation stage (cProfile, 114.8 s): `particles.step` 73.6 s, of which terrain look-ups (`_ground`/`cell_index`) 30 s and `MetField.sample` 23 s (82 s before the fast path, with fewer parcels); writing compressed frames 14.8 s (zlib; smoothed fields compress less well than the old sparse ones); building frames 17.6 s, of which the fire-age weighted median 6.7 s; accumulating sub-step samples most of the rest.
+Profile of the simulation stage (cProfile, 58.8 s):
 
-Peak live parcels 286,987. Dropped parcels over the run: left the domain 12,277; depleted below 1 % of release mass 334,929; missing met 0. `blh_estimated` false: the archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window.
+| Component | Time |
+|---|---|
+| `particles.step` | 33.0 s |
+| `MetField.sample` | 13.6 s |
+| terrain look-ups (`_grounds`) | 7.7 s, was 30 s |
+| building frames | 11.7 s |
+| fire-age weighted median (within frame building) | 4.6 s |
+| zlib frame compression | 7.7 s |
 
-Open-Meteo rate limits: the free archive answers HTTP 429 when all 22 full-domain batches are requested at once, and the client's backoff (1+2+4+8+16 s) does not outlast it; a retry a minute or so later completes from the partly filled cache. Changing the requested hours (here 192 to 193) changes every cache key and triggers this again. A cold first run of a new date therefore needs one or two attempts, plus 20 s for the terrain tiles once per installation.
+Machine load varies a lot between measurements here; another job was running in parallel. The previous round's 114 s profile had zlib at 13.7 s and `sample` at 23 s. That code did not change, so those components ran faster this time, not because of an optimisation. Expect variance of tens of percent between runs on this machine.
 
-Most parcels end by depletion, not by leaving the domain: with mixing heights near the 100 m floor at night, dry deposition at 0.2 cm/s removes about 7 % of a parcel's mass per hour, so parcels fall below 1 % of their release mass within a few days.
+Peak live parcels 286,987. Dropped parcels over the run: left the domain 12,277; depleted below 1 % of release mass 334,929; missing met 0. These match the previous round exactly, as expected from a bit-identical `step`. `blh_estimated` is false: the archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window.
 
-### Sampling noise
-Measured from the stored runs at four city cells. "Dominant tag" is the tag with the largest window-mean concentration there; "zero hours" is the share of the 144 hours in which that tag's value is exactly zero; "CV vs 3 h" is the standard deviation of (hourly total minus its centred 3-hour running mean) divided by the mean of the running mean. Lower is smoother.
+Cold first run of a new date: the free Open-Meteo archive answers HTTP 429 when all 22 full-domain batches are requested at once, and the client's backoff (1+2+4+8+16 s) does not outlast it. A retry a minute or so later completes from the partly filled cache; with a cold weather cache the previous round measured 12.6 s for the fetch. Changing the requested hours changes every cache key and triggers this again. The terrain tiles add 20 s once per installation.
 
-| City (cell) | dominant tag | zero hours, before | zero hours, now | CV vs 3 h, before | CV vs 3 h, now | window mean before / now, µg/m³ |
-|---|---|---|---|---|---|---|
-| Delhi (77.21 E, 28.61 N) | industry_delhi_ncr | 0.0 % | 0.0 % | 0.18 | 0.15 | 114.1 / 147.3 |
-| Patna (85.14 E, 25.61 N) | residential_bihar | 8.3 % | 0.0 % | 0.36 | 0.20 | 43.0 / 43.5 |
-| Lucknow (80.95 E, 26.85 N) | residential_uttar_pradesh | 10.4 % | 0.0 % | 0.45 | 0.26 | 29.3 / 41.2 |
-| Mumbai (72.88 E, 19.08 N) | industry_rest_of_india | 45.8 % | 0.0 % | 0.86 | 0.24 | 95.0 / 115.9 |
+Most parcels end by depletion, not by leaving the domain. With mixing heights near the 100 m floor at night, dry deposition at 0.2 cm/s removes about 7 % of a parcel's mass per hour, so parcels fall below 1 % of their release mass within a few days.
 
-"Before" is the version-1 run: instantaneous snapshot at each whole hour, no kernel, 100 parcels for every tag. fire_punjab at the Delhi cell is now non-zero in all 144 hours. Window means rose because each frame now averages over the hour including that hour's fresh release (parcels aged 0 to 50 minutes, still concentrated near their sources), where the old whole-hour snapshot saw parcels at least an hour old.
+### Sampling noise and how far to trust the numbers
+Measured from the stored runs at four city cells:
+- **Dominant tag**: the tag with the largest window-mean concentration there.
+- **Zero hours**: the share of the 144 hours in which that tag's value is exactly zero.
+- **CV vs 3 h**: the standard deviation of (hourly total minus its centred 3-hour running mean), divided by the mean of the running mean. Lower is smoother.
 
-Plain statement of sampling uncertainty: every value is estimated from a finite number of parcels, so it carries sampling noise as well as model error. A residual hour-to-hour scatter of roughly 15-25 % at these cells (the CV column) is mostly sampling noise; small contributions (a few µg/m³, or tags far from a city) are less reliable than large local ones; the kernel spreads aged parcels over 10-25 km, so sharp gradients from distant sources are blurred by design. Differences between hours or between tags smaller than about a quarter of the value should not be interpreted.
+Columns: v1 = whole-hour snapshot, no kernel, 100 parcels for every tag; v2 = left-point hour mean, kernel, 100/400 parcels; v3 = current, trapezoid hour mean.
+
+| City (cell) | dominant tag | zero hours v1 / v2 / v3 | CV vs 3 h v1 / v2 / v3 | window mean v1 / v2 / v3, µg/m³ |
+|---|---|---|---|---|
+| Delhi (77.21 E, 28.61 N) | industry_delhi_ncr | 0 / 0 / 0 % | 0.18 / 0.15 / 0.14 | 114.1 / 147.3 / 142.6 |
+| Patna (85.14 E, 25.61 N) | residential_bihar | 8.3 / 0 / 0 % | 0.36 / 0.20 / 0.20 | 43.0 / 43.5 / 42.6 |
+| Lucknow (80.95 E, 26.85 N) | residential_uttar_pradesh | 10.4 / 0 / 0 % | 0.45 / 0.26 / 0.27 | 29.3 / 41.2 / 39.1 |
+| Mumbai (72.88 E, 19.08 N) | industry_rest_of_india | 45.8 / 0 / 0 % | 0.86 / 0.24 / 0.23 | 95.0 / 115.9 / 111.5 |
+
+fire_punjab at the Delhi cell is non-zero in all 144 hours.
+
+Why the window means changed:
+- v1 to v2: means rose because hour means include each hour's own fresh release (parcels still concentrated near their sources), which a whole-hour snapshot never saw.
+- v2 to v3: means fell by 2-5 % because the left-point average overweighted that fresh release by about dt / (2 tau) for a residence time tau. The trapezoid rule removes that bias.
+
+Sampling uncertainty, in plain words. Every value is estimated from a finite number of parcels, so it carries sampling noise on top of model error.
+- Hourly source shares are good to about ±5 percentage points at Delhi, and to about ±10-15 percentage points at Lucknow and Mumbai.
+- When two sources' shares are within that margin of each other, their order is not resolved hourly. Do not say one is larger than the other.
+- Present sources below about 5 % of the total as "minor", not as a number.
+- For finer comparisons, use 3-6 hour or daily means. The hour-to-hour scatter (CV column) of roughly 15-25 % is mostly sampling noise and averages down.
+- The kernel spreads aged parcels over 10-25 km, so sharp gradients from distant sources are blurred by design.
 
 ### Sanity check, not tuned against anything
-Simulated dry PM2.5 (hour mean, sum over all tags) at the Delhi cell (ix 112, iy 226). Directly emitted PM2.5 only, no background or secondary aerosol; nothing was adjusted in response to these numbers.
+Simulated dry PM2.5 (trapezoid hour mean, sum over all tags) at the Delhi cell (ix 112, iy 226). Directly emitted PM2.5 only, no background or secondary aerosol; nothing was adjusted in response to these numbers.
 
 | Hour starting (UTC) | PM2.5 µg/m³ | top three tags |
 |---|---|---|
-| 11-03 00Z | 272.2 | industry_delhi_ncr 117.6, residential_delhi_ncr 63.7, fire_punjab 61.5 |
-| 11-03 06Z | 24.3 | industry_delhi_ncr 10.6, residential_delhi_ncr 7.8, fire_punjab 4.5 |
-| 11-03 12Z | 213.5 | residential_delhi_ncr 110.0, industry_delhi_ncr 84.7, fire_punjab 10.9 |
-| 11-05 00Z | 208.9 | industry_delhi_ncr 78.9, residential_delhi_ncr 59.9, fire_punjab 49.6 |
-| 11-06 00Z | 307.9 | industry_delhi_ncr 148.7, residential_delhi_ncr 133.8, industry_haryana 12.1 |
-| 11-08 23Z | 248.1 | residential_delhi_ncr 88.7, industry_delhi_ncr 88.4, fire_punjab 44.8 |
+| 11-03 00Z | 267.6 | industry_delhi_ncr 113.0, residential_delhi_ncr 63.9, fire_punjab 61.5 |
+| 11-03 06Z | 23.4 | industry_delhi_ncr 10.0, residential_delhi_ncr 7.6, fire_punjab 4.4 |
+| 11-03 12Z | 198.1 | residential_delhi_ncr 101.2, industry_delhi_ncr 78.3, fire_punjab 10.9 |
+| 11-05 00Z | 205.2 | industry_delhi_ncr 75.2, residential_delhi_ncr 60.1, fire_punjab 49.7 |
+| 11-06 00Z | 302.0 | industry_delhi_ncr 146.6, residential_delhi_ncr 130.1, industry_haryana 11.9 |
+| 11-08 23Z | 234.1 | residential_delhi_ncr 84.4, industry_delhi_ncr 78.8, fire_punjab 45.0 |
 
-Window mean 147.3 µg/m³; top contributors over the window: industry_delhi_ncr 65.2, residential_delhi_ncr 58.0, fire_punjab 9.7. The diurnal swing (night peaks, midday lows) follows the mixing height. Vehicles do not reach the top three, consistent with EDGAR's small road-transport total (see the inventory caveats above).
+Window mean 142.6 µg/m³; top contributors over the window: industry_delhi_ncr 62.9, residential_delhi_ncr 55.6, fire_punjab 9.7.
+- The diurnal swing (night peaks, midday lows) follows the mixing height.
+- Vehicles do not reach the top three, consistent with EDGAR's small road-transport total (see the inventory caveats above).
 
 ### History
-Version 1 (first commit of this task) used whole-hour snapshots and no kernel. With 200 parcels for every tag the simulation stage took 128 s (cold wall 158.6 s; `MetField.sample` 82 s of it), so the default was lowered to 100 (warm wall 68.7 s, peak 215,047 parcels). That run's sampling noise (table above, "before") led to the current configuration.
-
-## Measured data coverage
-
-Measured PM2.5 comes from OpenAQ v3, provider `CPCB` only (`server/vayu/clients/openaq.py`), checked against the live API on 2026-11-11.
-
-- **Gap.** CPCB-provider PM2.5 in OpenAQ for Delhi is available to about October 2022 and again from 2025-02-18. Dates in between return no measurements; the UI shows them as missing (never filled or interpolated).
-- **`caaqm` is not used.** Its Delhi sensors also end by 2022-10-31, so it does not fill the November 2022 to February 2025 gap and would duplicate sites already in the CPCB provider.
-- **Validation episode.** Because of the gap the validation episode is early November 2025, not 2023.
-- **Hour alignment.** CPCB hours run [HH:30, HH+1:30) UTC. Each output hour [h, h+1) UTC is the overlap-weighted mean of the periods that overlap it (the mean of the two straddling periods); if either is missing the hour is missing.
-- **Sites.** One physical site can appear as several locations (legacy and current sensors, or two agencies at the same coordinates); locations within 300 m are merged into one station before the hourly median over the nearest 5 stations with data.
-- **Live feed.** `data.gov.in` (resource 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69) answered HTTP 502 on every request on 2026-11-11, so its field names, filters and city spellings are not yet checked against a real reply.
-
-### CPCB PM2.5 locations within 25 km of each city centre
-
-"Locations" counts CPCB-provider locations with a pm25 sensor (including legacy and duplicate records); "reporting" those whose last reading was within 7 days of 2026-11-11.
-
-| City | Locations | Reporting |
-|---|---|---|
-| delhi | 57 | 48 |
-| gurugram | 24 | 21 |
-| noida | 38 | 32 |
-| ghaziabad | 28 | 25 |
-| faridabad | 29 | 26 |
-| amritsar | 1 | 1 |
-| ludhiana | 1 | 1 |
-| jalandhar | 1 | 1 |
-| patiala | 1 | 1 |
-| bathinda | 1 | 0 |
-| chandigarh | 5 | 5 |
-| ambala | 1 | 1 |
-| hisar | 1 | 1 |
-| rohtak | 2 | 1 |
-| karnal | 1 | 1 |
-| panipat | 1 | 1 |
-| meerut | 3 | 3 |
-| agra | 6 | 6 |
-| kanpur | 4 | 3 |
-| lucknow | 8 | 6 |
-| prayagraj | 3 | 3 |
-| varanasi | 5 | 4 |
-| gorakhpur | 1 | 1 |
-| bareilly | 2 | 2 |
-| moradabad | 7 | 6 |
-| patna | 7 | 7 |
-| gaya | 4 | 3 |
-| muzaffarpur | 4 | 3 |
-| jaipur | 7 | 6 |
-| jodhpur | 6 | 5 |
-| bhopal | 4 | 4 |
-| indore | 6 | 5 |
-| ahmedabad | 12 | 11 |
-| mumbai | 36 | 32 |
-| pune | 16 | 13 |
-| hyderabad | 11 | 10 |
-| bengaluru | 15 | 10 |
-| chennai | 9 | 7 |
-| kolkata | 15 | 13 |
-| guwahati | 5 | 5 |
-
-### Hourly coverage, 2025-11-03 to 2025-11-09 (168 hours, real calls)
-
-Stations = stations (nearest first, at most 5) with at least one valid hour; Hours present = share of the 168 hours with a value in the hourly median.
-
-| City | Stations with data | Hours present |
-|---|---|---|
-| delhi | 5 | 89 % |
-| gurugram | 5 | 89 % |
-| noida | 5 | 89 % |
-| ghaziabad | 5 | 89 % |
-| faridabad | 5 | 89 % |
-| amritsar | 1 | 88 % |
-| ludhiana | 1 | 83 % |
-| jalandhar | 1 | 88 % |
-| patiala | 1 | 86 % |
-| bathinda | 1 | 85 % |
-| chandigarh | 5 | 89 % |
-| ambala | 1 | 88 % |
-| hisar | 1 | 88 % |
-| rohtak | 1 | 71 % |
-| karnal | 1 | 88 % |
-| panipat | 1 | 82 % |
-| meerut | 3 | 89 % |
-| agra | 5 | 89 % |
-| kanpur | 3 | 89 % |
-| lucknow | 5 | 89 % |
-| prayagraj | 3 | 89 % |
-| varanasi | 4 | 89 % |
-| gorakhpur | 1 | 84 % |
-| bareilly | 2 | 88 % |
-| moradabad | 5 | 89 % |
-| patna | 5 | 89 % |
-| gaya | 3 | 89 % |
-| muzaffarpur | 3 | 89 % |
-
-All 28 northern cities have at least one station with hourly data for that week. At most 89 % of hours are present for any city (the half-hour alignment drops an hour wherever either straddling period is missing).
+- **Version 1** used whole-hour snapshots and no kernel. With 200 parcels for every tag, the simulation stage took 128 s (cold wall 158.6 s, of which `MetField.sample` was 82 s), so the default was lowered to 100 (warm wall 68.7 s, peak 215,047 parcels).
+- **Version 2** added left-point hour means, the kernel, the 400-parcel rest_of_india budget and the met fast path, at a warm wall of 114.1 s, measured under heavier machine load.
+- **Version 3** changed to trapezoid hour means and faster terrain look-ups, at a warm wall of 53.5 s.

@@ -5,9 +5,11 @@ covers [sim_start + k, sim_start + k + 1) and met time `t` is hours since `sim_s
 released during the spin-up are advanced, but frames are written only from `start` on.
 
 Within each hour `k`: release hour `k`'s emissions at time `k`, then take 3600 / DT_S transport
-steps, sampling the parcel state before each step (times k, k + 1/6, ..., k + 5/6). Output frame
-`h` is the MEAN over those samples, i.e. the mean over [start + h, start + h + 1) (CPCB's hourly
-average convention); it includes that hour's own release. The volume uses the mean of the
+steps. Output frame `h` is the hour MEAN over [start + h, start + h + 1) (CPCB's hourly average
+convention), by the trapezoid rule over the seven states at k, k + 1/6, ..., k + 1: weight 1/2 on
+the post-release state at the start, 1 on each of the five intermediate states, 1/2 on the state
+after the sixth step, divided by 6. (A left-point average would overweight the fresh release, by
+about dt / (2 tau) for a residence time tau.) The volume uses the mean of the
 mixing height at the hour's start and end; the haze factor uses the mean relative humidity
 likewise. Each tag's mass grid is smoothed with an age-dependent box kernel (constants.py,
 KERNEL_*) before dividing by volume, conserving mass exactly.
@@ -19,13 +21,17 @@ domain and the surviving fraction `frac`, never on mass. Scaling every emission 
 therefore gives the same trajectories, and fields scaled by that factor (exactly for powers of
 two, within float32 rounding otherwise). That is what lets the browser rescale sources.
 
-Storage. A run is written into a temporary sibling directory and renamed into place only when
-complete, so a failed or concurrent run never leaves mixed frames. `load_run` serves a stored run
-only while it is still valid for the date (same code constants, same window, final or fresh).
+Storage. Each run lives in its own directory `runs/{date}/{run_id}/`, written into a temporary
+sibling and renamed when complete, and never modified afterwards; `runs/{date}/current.json`
+names the current run and is replaced atomically. A `RunResult` held across a rebuild keeps
+reading its own frames. `load_run` follows the pointer and serves the run only while it is still
+valid for the date (same constants, same window, final or fresh). Superseded run directories are
+deleted once they are more than RETAIN_SUPERSEDED old.
 """
 import json
 import math
 import os
+import re
 import shutil
 import uuid
 from collections.abc import Callable
@@ -36,9 +42,10 @@ from pathlib import Path
 
 import numpy as np
 
-from vayu import config
+from vayu import config, domain, terrain
 from vayu import constants as C
-from vayu.clients.openmeteo import fetch_met
+from vayu.clients import firms
+from vayu.clients.openmeteo import ARCHIVE_FINAL_AFTER, fetch_met
 from vayu.constants import DT_S, HAZE_GROWTH_COEFF, HAZE_RH_CAP, KERNEL_AGE_H, KERNEL_HALF_WIDTH
 from vayu.domain import (
     CELL,
@@ -52,11 +59,11 @@ from vayu.domain import (
     cell_index,
     inside,
 )
-from vayu.emissions import Emissions
+from vayu.emissions import Emissions, fires, inventory
 from vayu.emissions.fires import fire_emissions
-from vayu.emissions.inventory import EDGAR_SECTORS, inventory_emissions, inventory_notes
+from vayu.emissions.inventory import inventory_emissions
 from vayu.met import MetField
-from vayu.sim import particles
+from vayu.sim import particles as particles_module
 from vayu.sim.particles import Particles, step
 from vayu.terrain import elevation
 
@@ -69,9 +76,14 @@ SPINUP_H = 48  # hours simulated before the window so it starts with transported
 PARTICLES_PER_TAG_HOUR = 100
 PARTICLES_REST_OF_INDIA = 400
 
-FORMAT_VERSION = 2
-FINAL_AFTER = timedelta(days=5)  # a run made this long after its window ends is never refreshed
-FRESH_FOR = timedelta(hours=1)  # otherwise it is served for this long after it was made
+# Bump FORMAT_VERSION for any code change that alters results without changing a constant in
+# constants_snapshot (e.g. a new algorithm), so stored runs made by older code are not served.
+FORMAT_VERSION = 3
+# A run made this long after its window ended is final and never refreshed: the Open-Meteo
+# archive's own finality lag (FIRMS settles after 7 days, so it is covered too).
+FINAL_AFTER = ARCHIVE_FINAL_AFTER
+FRESH_FOR = timedelta(hours=1)  # otherwise a run is served for this long after it was made
+RETAIN_SUPERSEDED = timedelta(hours=2)  # readers may still hold a superseded run this long
 
 STEPS_PER_HOUR = 3600 // DT_S
 NCELL = NY * NX
@@ -128,10 +140,16 @@ def fires_assumed_from(start: datetime, now: datetime, hours: int) -> int | None
     return first if first < hours else None
 
 
-def constants_snapshot() -> dict:
-    """Every setting that affects a run's results, read at call time (JSON-normalised)."""
+def constants_snapshot(*, spinup_h: int | None = None,
+                       particles: tuple[int, int] | None = None) -> dict:
+    """Every setting that affects a run's results, read at call time (JSON-normalised).
+
+    `spinup_h` and `particles` (default, rest_of_india parcels per tag-hour) record the values a
+    run actually used when they differ from the module settings.
+    """
+    default_n, roi_n = particles or (PARTICLES_PER_TAG_HOUR, PARTICLES_REST_OF_INDIA)
     snap = {
-        name: getattr(particles, name)
+        name: getattr(particles_module, name)
         for name in ("DT_S", "K_H_M2_S", "V_DEP_M_S", "WASHOUT_A", "WASHOUT_B", "Z_RELAX_S",
                      "MIN_MASS_FRACTION")
     }
@@ -144,11 +162,28 @@ def constants_snapshot() -> dict:
                      "BLH_MAX_M", "BLH_NIGHT_BASE_M", "BLH_NIGHT_PER_MS", "BLH_DAY_BASE_M",
                      "BLH_DAY_PER_K", "BLH_PEAK_LOCAL_HOUR", "BLH_DAY_HALF_WIDTH_H")
     })
-    snap.update(
-        SPINUP_H=SPINUP_H, WINDOW_H=WINDOW_H, PARTICLES_PER_TAG_HOUR=PARTICLES_PER_TAG_HOUR,
-        PARTICLES_REST_OF_INDIA=PARTICLES_REST_OF_INDIA, inventory=inventory_notes(),
-        inventory_sectors=EDGAR_SECTORS,
-    )
+    snap.update({
+        f"domain.{name}": getattr(domain, name)
+        for name in ("LON_MIN", "LON_MAX", "LAT_MIN", "LAT_MAX", "CELL", "NX", "NY",
+                     "NCR_CENTRE", "NCR_RADIUS_KM")
+    })
+    snap.update({
+        f"firms.{name}": getattr(firms, name)
+        for name in ("SATELLITES", "HISTORY_DAYS", "STATIC_MIN_DAYS", "STATIC_CELL_DEG")
+    })
+    snap.update({
+        "fires.FORECAST_BASIS_DAYS": fires.FORECAST_BASIS_DAYS,
+        "terrain.ZOOM": terrain.ZOOM,
+        "terrain.TILE_URL": terrain.TILE_URL,
+        "inventory.RELEASE": inventory.RELEASE,
+        "inventory.YEAR": inventory.YEAR,
+        "inventory.EDGAR_SECTORS": inventory.EDGAR_SECTORS,
+        "inventory.notes": inventory.inventory_notes(),
+        "SPINUP_H": SPINUP_H if spinup_h is None else spinup_h,
+        "WINDOW_H": WINDOW_H,
+        "PARTICLES_PER_TAG_HOUR": default_n,
+        "PARTICLES_REST_OF_INDIA": roi_n,
+    })
     return json.loads(json.dumps(snap))
 
 
@@ -216,17 +251,18 @@ class _HourMean:
         self.slot = np.full(len(TAGS), -1, dtype=np.int64)
         self.slot[active] = np.arange(len(active))
         self.active = active
-        self.samples = 0
+        self.weight = 0.0
         self.idx, self.mass = [], []
         self.fire_cell, self.fire_age, self.fire_mass = [], [], []
 
-    def add(self, p: Particles) -> None:
-        self.samples += 1
+    def add(self, p: Particles, weight: float) -> None:
+        """Add one state with quadrature weight `weight` (applied to mass and fire age alike)."""
+        self.weight += weight
         ix, iy = cell_index(p.lon, p.lat)
         ok = inside(ix, iy)
         cell = (iy * NX + ix)[ok]
         tag = p.tag[ok]
-        mass = p.mass_kg[ok].astype(np.float64)
+        mass = p.mass_kg[ok].astype(np.float64) * weight
         age_h = p.age_s[ok].astype(np.float64) / 3600.0
         age_class = np.searchsorted(KERNEL_AGE_H, age_h, side="right")
         self.idx.append((self.slot[tag] * NCLASS + age_class) * NCELL + cell)
@@ -251,7 +287,7 @@ class _HourMean:
         out = {}
         for slot in np.flatnonzero(mass.reshape(n, -1).any(axis=1)):
             grid = sum(_box_spread(mass[slot, c], KERNEL_HALF_WIDTH[c]) for c in range(NCLASS))
-            grid = grid / self.samples
+            grid = grid / self.weight
             out[TAG_IDS[self.active[slot]]] = (grid * 1e9 / volume_m3).astype(np.float32)
         out["fire_age_h"] = _weighted_median_by_cell(
             np.concatenate(self.fire_cell), np.concatenate(self.fire_age),
@@ -276,6 +312,8 @@ def _release(emissions: Emissions, budget: dict[int, int], k: int, met, elev, rn
         if (kg < 0).any():
             raise ValueError(f"negative emission for {TAG_IDS[ti]} in hour {k}")
         total = kg.sum()
+        if not total > 0:
+            continue
         pick = rng.choice(kg.size, size=n, p=kg / total)
         cols["lon"].append(LON_MIN + (ix[pick] + rng.random(n)) * CELL)
         cols["lat"].append(LAT_MIN + (iy[pick] + rng.random(n)) * CELL)
@@ -298,21 +336,10 @@ def _frame_path(out_dir: Path, h: int) -> Path:
 
 
 def _write_atomic(path: Path, write: Callable) -> None:
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     with open(tmp, "wb") as f:
         write(f)
     os.replace(tmp, path)
-
-
-def _swap_into_place(work: Path, target: Path) -> None:
-    """Rename the finished `work` directory to `target`, replacing any existing one."""
-    old = None
-    if target.exists():
-        old = target.with_name(f".{target.name}.old-{uuid.uuid4().hex}")
-        os.replace(target, old)
-    os.replace(work, target)
-    if old is not None:
-        shutil.rmtree(old, ignore_errors=True)
 
 
 def _parse_time(value) -> datetime | None:
@@ -334,6 +361,10 @@ class RunResult:
     made_at: datetime | None
     format_version: int
     constants: dict
+
+    @property
+    def run_id(self) -> str:
+        return self.out_dir.name
 
     @classmethod
     def from_dir(cls, out_dir: Path) -> "RunResult | None":
@@ -404,8 +435,9 @@ def simulate(
     `emissions` are indexed from `start - spinup_h` and must cover `spinup_h + hours` hours;
     `met` must cover one hour more (the last frame's volume uses the mixing height at its end).
     Defaults: spinup_h = SPINUP_H; parcels per tag-hour from `parcels_per_tag_hour`, or
-    `particles_per_tag_hour` for every tag if given (tests). The run is built in a temporary
-    sibling directory and renamed to `out_dir` when complete.
+    `particles_per_tag_hour` for every tag if given (tests; recorded as such in the constants
+    snapshot). `out_dir` must not exist: the run is built in a temporary sibling directory and
+    renamed to `out_dir` when complete, and is never modified afterwards.
     """
     spinup_h = SPINUP_H if spinup_h is None else spinup_h
     total = spinup_h + hours
@@ -420,8 +452,11 @@ def simulate(
         else parcels_per_tag_hour(TAG_IDS[ti])
         for ti in active
     }
+    used_particles = None if particles_per_tag_hour is None else (particles_per_tag_hour,) * 2
 
     out_dir = Path(out_dir)
+    if out_dir.exists():
+        raise FileExistsError(f"{out_dir} exists; run directories are never overwritten")
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     work = out_dir.with_name(f".{out_dir.name}.tmp-{uuid.uuid4().hex}")
     work.mkdir()
@@ -435,12 +470,14 @@ def simulate(
             p = Particles.concat([p, _release(emissions, budget, k, met, elev, rng)])
             peak = max(peak, len(p))
             acc = _HourMean(active) if k >= spinup_h else None
+            if acc is not None:
+                acc.add(p, 0.5)  # trapezoid: half weight on the post-release state at k
             for i in range(STEPS_PER_HOUR):
-                if acc is not None:
-                    acc.add(p)
                 p, s = step(p, met, elev, k + i * DT_S / 3600.0, rng)
                 for name in stats:
                     stats[name] += getattr(s, name)
+                if acc is not None:
+                    acc.add(p, 0.5 if i == STEPS_PER_HOUR - 1 else 1.0)
             if acc is not None:
                 arrays = acc.frame(met, k)
                 _write_atomic(_frame_path(work, k - spinup_h),
@@ -451,22 +488,21 @@ def simulate(
             "format_version": FORMAT_VERSION,
             "start": start.isoformat(),
             "hours": hours,
-            "frame_semantics": "hour_mean",
+            "frame_semantics": "hour_mean_trapezoid",
             "forecast_from": forecast_from,
             "fires_assumed_from": fires_assumed_from,
             "made_at": None if made_at is None else _utc(made_at).isoformat(),
             "tags": TAG_IDS,
             "seed": seed,
             "parcels_per_tag_hour": {TAG_IDS[ti]: n for ti, n in budget.items()},
-            "constants": constants_snapshot(),
+            "constants": constants_snapshot(spinup_h=spinup_h, particles=used_particles),
             "blh_estimated": bool(met.blh_estimated),
             "step_stats": stats,
             "peak_parcels": peak,
             "complete": True,
         }
-        meta["constants"]["SPINUP_H"] = spinup_h
         _write_atomic(work / "run.json", lambda f: f.write(json.dumps(meta, indent=1).encode()))
-        _swap_into_place(work, out_dir)
+        os.rename(work, out_dir)
     finally:
         if work.exists():
             shutil.rmtree(work, ignore_errors=True)
@@ -477,18 +513,65 @@ def simulate(
     return result
 
 
-def _run_dir(day: date) -> Path:
+# --- stored runs: runs/{date}/{run_id}/ plus a current.json pointer ---
+
+_POINTER = "current.json"
+_RUN_ID = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{8}")
+
+
+def _date_dir(day: date) -> Path:
     return config.data_dir() / "runs" / day.isoformat()
 
 
-def load_run(day: date, now: datetime) -> RunResult | None:
-    """The stored run for `day` if it is still valid at `now`, else None (the caller re-runs).
+def _new_run_id(made_at: datetime) -> str:
+    return f"{_utc(made_at):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
 
-    Valid means: complete; same format version and constants snapshot as the current code;
-    its start equals `run_window(day, now)`'s; and either it was final when made (made at least
-    FINAL_AFTER after its window ended) or it was made less than FRESH_FOR before `now`.
+
+def _run_id_time(name: str) -> datetime | None:
+    """made_at encoded in a run directory name (also a `.{run_id}.tmp-...` build directory)."""
+    try:
+        return datetime.strptime(name.lstrip(".")[:16], "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def _current_run_id(day: date) -> str | None:
+    try:
+        pointer = json.loads((_date_dir(day) / _POINTER).read_text())
+        run_id = pointer["run_id"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return run_id if isinstance(run_id, str) and _RUN_ID.fullmatch(run_id) else None
+
+
+def _set_current(day: date, run_id: str) -> None:
+    _write_atomic(_date_dir(day) / _POINTER,
+                  lambda f: f.write(json.dumps({"run_id": run_id}).encode()))
+
+
+def _cleanup(day: date, now: datetime) -> None:
+    """Delete run (and abandoned build) directories for `day` that are not current and were made
+    more than RETAIN_SUPERSEDED before `now`. Unrecognised entries are left alone."""
+    current = _current_run_id(day)
+    for child in _date_dir(day).iterdir():
+        made = _run_id_time(child.name)
+        if (child.is_dir() and child.name != current and made is not None
+                and _utc(now) - made > RETAIN_SUPERSEDED):
+            shutil.rmtree(child, ignore_errors=True)
+
+
+def load_run(day: date, now: datetime) -> RunResult | None:
+    """The current stored run for `day` if it is still valid at `now`, else None (re-run).
+
+    Valid means: the pointer names a complete run; same format version and constants snapshot
+    as the current code; its start equals `run_window(day, now)`'s; and either it was final when
+    made (made at least FINAL_AFTER after its window ended) or it was made less than FRESH_FOR
+    before `now`.
     """
-    res = RunResult.from_dir(_run_dir(day))
+    run_id = _current_run_id(day)
+    if run_id is None:
+        return None
+    res = RunResult.from_dir(_date_dir(day) / run_id)
     if res is None or res.made_at is None:
         return None
     if res.format_version != FORMAT_VERSION or res.constants != constants_snapshot():
@@ -502,8 +585,9 @@ def load_run(day: date, now: datetime) -> RunResult | None:
 
 
 def run_date(day: date, now: datetime, progress: Progress = _noop) -> RunResult:
-    """The run for `day`: the stored one if still valid (see `load_run`), otherwise fetch inputs
-    and simulate. Upstream errors propagate; a failed run leaves the stored state unchanged."""
+    """The run for `day`: the stored one if still valid (see `load_run`), otherwise fetch inputs,
+    simulate into a new run directory and point `current.json` at it. Upstream errors
+    propagate; a failed run leaves the stored state unchanged."""
     cached = load_run(day, now)
     if cached is not None:
         progress(1.0, "cached")
@@ -518,9 +602,14 @@ def run_date(day: date, now: datetime, progress: Progress = _noop) -> RunResult:
     met = MetField(fetch_met(sim_start, total + 1, now))
     progress(0.1, "terrain")
     elev = elevation()
-    return simulate(
-        emissions, met, elev, start, WINDOW_H, _run_dir(day),
-        progress=lambda f, s: progress(1.0 if f >= 1.0 else 0.12 + 0.88 * f, s),
+    run_id = _new_run_id(now)
+    result = simulate(
+        emissions, met, elev, start, WINDOW_H, _date_dir(day) / run_id,
+        progress=lambda f, s: progress(0.12 + 0.87 * f, s),
         spinup_h=SPINUP_H, forecast_from=forecast_from,
         fires_assumed_from=fires_assumed_from(start, now, WINDOW_H), made_at=now,
     )
+    _set_current(day, run_id)
+    _cleanup(day, now)
+    progress(1.0, "done")
+    return result

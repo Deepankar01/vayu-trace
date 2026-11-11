@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
@@ -25,6 +26,12 @@ NOW = datetime(2026, 11, 11, 7, 30, tzinfo=UTC)
 START = datetime(2023, 11, 3, tzinfo=UTC)
 ALL_TAG_IDS = [t.id for t in TAGS]
 STEPS = 3600 // DT_S
+TRAPEZOID = np.r_[0.5, np.ones(STEPS - 1), 0.5] / STEPS  # weights of the 7 states in an hour
+
+
+def hour_mean(series, h):
+    """Trapezoid hour mean of a per-state series (state index = hours * STEPS + step)."""
+    return float(np.dot(TRAPEZOID, series[h * STEPS:(h + 1) * STEPS + 1]))
 
 
 class StubMet:
@@ -122,15 +129,15 @@ def test_concentration_units(tmp_path, monkeypatch):
     iy, ix = 200, 150
     res = simulate(one_cell("industry_bihar", iy, ix), StubMet(3, blh=blh), flat(), START, 2,
                    tmp_path / "run", spinup_h=0, particles_per_tag_hour=10)
-    # Mass sampled before each step: surviving fraction after the deposition so far.
-    frac, samples = 1.0, []
-    for i in range(2 * STEPS):
-        samples.append(frac)
+    # Surviving fraction of each state; step i deposits with blh at its start time i / STEPS.
+    frac, states = 1.0, []
+    for i in range(2 * STEPS + 1):
+        states.append(frac)
         frac *= np.exp(-particles.V_DEP_M_S / blh(i / STEPS) * DT_S)
     for h in range(2):
         field = res.frame(h)["industry_bihar"]
         assert field.dtype == np.float32 and field.shape == (NY, NX)
-        mean_kg = np.mean(samples[h * STEPS:(h + 1) * STEPS])
+        mean_kg = hour_mean(states, h)
         volume_blh = 0.5 * (blh(h) + blh(h + 1))  # mean of the hour's start and end
         expected = mean_kg * 1e9 / (cell_area_m2()[iy] * volume_blh)
         np.testing.assert_allclose(field[iy, ix], expected, rtol=1e-5)
@@ -222,11 +229,11 @@ def test_haze_and_fire_age_grids(tmp_path, monkeypatch):
     res = simulate(em, StubMet(rh=0.5), flat(), START, 3, tmp_path / "run", spinup_h=0,
                    particles_per_tag_hour=4)
     np.testing.assert_allclose(res.haze(1), 1.125)
-    # Samples at ages h, h + 1/6, ..., h + 5/6; the earlier ones carry slightly more mass, so the
-    # lower weighted median is the third sample.
+    # States at ages h, h + 1/6, ..., h + 1 with trapezoid weights 1/2, 1, ..., 1, 1/2 (times a
+    # slowly decaying mass): cumulative weight passes half at the fourth state, age h + 1/2.
     for h in (0, 2):
         age = res.fire_age_h(h)
-        assert age[240, 100] == pytest.approx(h + 1 / 3, abs=1e-4)
+        assert age[240, 100] == pytest.approx(h + 0.5, abs=1e-4)
         age[240, 100] = np.nan
         assert np.isnan(age).all()  # vehicle parcels do not count; empty cells are NaN
 
@@ -283,8 +290,8 @@ def test_aged_parcels_are_spread(tmp_path, monkeypatch, spinup, width):
     box_mass = field[iy - r:iy + r + 1, ix - r:ix + r + 1] * cell_area_m2()[
         iy - r:iy + r + 1, None] * 500.0 / 1e9
     np.testing.assert_allclose(box_mass, box_mass[0, 0], rtol=1e-6)  # equal shares of mass
-    frac = np.exp(-particles.V_DEP_M_S / 500.0 * DT_S * (spinup * STEPS + np.arange(STEPS)))
-    assert box_mass.sum() == pytest.approx(frac.mean(), rel=1e-5)  # nothing lost to the kernel
+    frac = np.exp(-particles.V_DEP_M_S / 500.0 * DT_S * (spinup * STEPS + np.arange(STEPS + 1)))
+    assert box_mass.sum() == pytest.approx(np.dot(TRAPEZOID, frac), rel=1e-5)  # nothing lost to the kernel
 
 
 # --- simulate housekeeping ---
@@ -309,7 +316,61 @@ def test_default_budget_gives_rest_of_india_more_parcels(tmp_path):
     meta = json.loads((res.out_dir / "run.json").read_text())
     assert meta["peak_parcels"] == 500
     assert meta["parcels_per_tag_hour"] == {"industry_bihar": 100, "industry_rest_of_india": 400}
-    assert meta["frame_semantics"] == "hour_mean"
+    assert meta["frame_semantics"] == "hour_mean_trapezoid"
+    assert (meta["constants"]["PARTICLES_PER_TAG_HOUR"],
+            meta["constants"]["PARTICLES_REST_OF_INDIA"]) == (100, 400)  # module budget, as used
+
+
+def test_budget_override_is_recorded_as_used(tmp_path):
+    res = simulate(two_tag_emissions(2), StubMet(), flat(), START, 1, tmp_path / "run",
+                   spinup_h=1, particles_per_tag_hour=5)
+    assert res.constants["PARTICLES_PER_TAG_HOUR"] == 5
+    assert res.constants["PARTICLES_REST_OF_INDIA"] == 5
+    assert res.constants != run.constants_snapshot()
+
+
+def test_all_zero_emissions_release_nothing(tmp_path):
+    res = simulate(two_tag_emissions(3).scaled(0.0), StubMet(), flat(), START, 2,
+                   tmp_path / "run", spinup_h=1, particles_per_tag_hour=5)
+    assert json.loads((res.out_dir / "run.json").read_text())["peak_parcels"] == 0
+    for h in range(2):
+        assert not any(np.any(f) for f in res.frame(h).values())
+
+
+def test_release_skips_zero_total_tag_hour():
+    class AllZero(Emissions):
+        def hour(self, tag_id, h):  # entries present but all zero
+            return np.array([226]), np.array([112]), np.array([0.0])
+
+    em = AllZero()
+    em.add("vehicles_delhi_ncr", 0, [226], [112], [1.0])
+    p = run._release(em, {run.TAG_IDS.index("vehicles_delhi_ncr"): 5}, 0, StubMet(), flat(),
+                     np.random.default_rng(0))
+    assert len(p) == 0
+
+
+EXPECTED_SNAPSHOT_KEYS = sorted([
+    "DT_S", "K_H_M2_S", "V_DEP_M_S", "WASHOUT_A", "WASHOUT_B", "Z_RELAX_S", "MIN_MASS_FRACTION",
+    "HAZE_GROWTH_COEFF", "HAZE_RH_CAP", "KERNEL_AGE_H", "KERNEL_HALF_WIDTH",
+    "FIRE_PEAK_HOUR_IST", "FIRE_SIGMA_H", "BIOMASS_KG_PER_MJ", "EF_PM25_CROP_G_PER_KG",
+    "EF_PM25_VEG_G_PER_KG", "CROP_STATES", "FIRE_PROFILE_FLOOR", "WIND_BLEND_100M",
+    "MET_STEP_DEG", "BLH_MIN_M", "BLH_MAX_M", "BLH_NIGHT_BASE_M", "BLH_NIGHT_PER_MS",
+    "BLH_DAY_BASE_M", "BLH_DAY_PER_K", "BLH_PEAK_LOCAL_HOUR", "BLH_DAY_HALF_WIDTH_H",
+    "domain.LON_MIN", "domain.LON_MAX", "domain.LAT_MIN", "domain.LAT_MAX", "domain.CELL",
+    "domain.NX", "domain.NY", "domain.NCR_CENTRE", "domain.NCR_RADIUS_KM",
+    "firms.SATELLITES", "firms.HISTORY_DAYS", "firms.STATIC_MIN_DAYS", "firms.STATIC_CELL_DEG",
+    "fires.FORECAST_BASIS_DAYS", "terrain.ZOOM", "terrain.TILE_URL", "inventory.RELEASE",
+    "inventory.YEAR", "inventory.EDGAR_SECTORS", "inventory.notes", "SPINUP_H", "WINDOW_H",
+    "PARTICLES_PER_TAG_HOUR", "PARTICLES_REST_OF_INDIA",
+])
+
+
+def test_constants_snapshot_keys_are_a_conscious_list():
+    """Adding or removing a snapshot setting must update this list. (A changed snapshot already
+    invalidates stored runs, so FORMAT_VERSION need not change for that.)"""
+    snap = run.constants_snapshot()
+    assert sorted(snap) == EXPECTED_SNAPSHOT_KEYS
+    assert snap["inventory.RELEASE"] == "v8.1_FT2022_AP" and snap["fires.FORECAST_BASIS_DAYS"] == 3
 
 
 def test_progress_monotonic_and_ends_at_1(tmp_path):
@@ -323,9 +384,8 @@ def test_progress_monotonic_and_ends_at_1(tmp_path):
 
 
 def test_failed_run_keeps_previous_and_leaves_no_temp_dirs(tmp_path, monkeypatch):
-    out = tmp_path / "runs" / "x"
-    first = simulate(two_tag_emissions(3), StubMet(), flat(), START, 2, out, spinup_h=1,
-                     particles_per_tag_hour=5, fires_assumed_from=1)
+    first = simulate(two_tag_emissions(3), StubMet(), flat(), START, 2, tmp_path / "runs" / "x",
+                     spinup_h=1, particles_per_tag_hour=5, fires_assumed_from=1)
     assert first.fires_assumed_from == 1
 
     def broken(*a, **kw):
@@ -333,19 +393,22 @@ def test_failed_run_keeps_previous_and_leaves_no_temp_dirs(tmp_path, monkeypatch
 
     monkeypatch.setattr(run, "step", broken)
     with pytest.raises(RuntimeError, match="boom"):
-        simulate(two_tag_emissions(3), StubMet(), flat(), START, 2, out, spinup_h=1)
-    assert [p.name for p in out.parent.iterdir()] == ["x"]
-    assert RunResult.from_dir(out) is not None
+        simulate(two_tag_emissions(3), StubMet(), flat(), START, 2, tmp_path / "runs" / "y",
+                 spinup_h=1)
+    assert [p.name for p in (tmp_path / "runs").iterdir()] == ["x"]
+    assert RunResult.from_dir(tmp_path / "runs" / "x") is not None
 
 
-def test_rerun_replaces_existing_directory(tmp_path):
+def test_existing_run_directory_is_never_overwritten(tmp_path):
     out = tmp_path / "run"
-    simulate(two_tag_emissions(4), StubMet(), flat(), START, 3, out, spinup_h=1,
-             particles_per_tag_hour=5)
-    res = simulate(two_tag_emissions(3), StubMet(), flat(), START, 2, out, spinup_h=1,
-                   particles_per_tag_hour=5)
-    assert res.hours == 2 and not (out / "frame_002.npz").exists()
+    first = simulate(two_tag_emissions(4), StubMet(), flat(), START, 3, out, spinup_h=1,
+                     particles_per_tag_hour=5)
+    before = first.frame(2)
+    with pytest.raises(FileExistsError):
+        simulate(two_tag_emissions(3), StubMet(), flat(), START, 2, out, spinup_h=1)
     assert [p.name for p in tmp_path.iterdir()] == ["run"]
+    for tag, field in first.frame(2).items():
+        np.testing.assert_array_equal(field, before[tag])
 
 
 @pytest.mark.parametrize("content", ["{", '{"complete": true}', '["complete"]',
@@ -410,9 +473,13 @@ def test_run_date_builds_spun_up_window(offline, tmp_path):
     assert offline["met"] == [(sim_start, 6, NOW)]  # one hour more: the last hour's end
     assert res.hours == 3 and res.start == START and res.forecast_from is None
     assert res.fires_assumed_from is None and res.made_at == NOW
-    meta = json.loads((tmp_path / "runs" / "2023-11-05" / "run.json").read_text())
+    assert res.out_dir.parent == tmp_path / "runs" / "2023-11-05"
+    assert res.run_id == res.out_dir.name and res.run_id.startswith("20261111T073000Z-")
+    pointer = json.loads((tmp_path / "runs" / "2023-11-05" / "current.json").read_text())
+    assert pointer == {"run_id": res.run_id}
+    meta = json.loads((res.out_dir / "run.json").read_text())
     assert meta["complete"] is True and meta["start"] == START.isoformat()
-    assert meta["format_version"] == 2 and meta["frame_semantics"] == "hour_mean"
+    assert meta["format_version"] == 3 and meta["frame_semantics"] == "hour_mean_trapezoid"
     assert meta["made_at"] == NOW.isoformat()
     assert meta["constants"] == run.constants_snapshot()
     assert meta["constants"]["DT_S"] == 600 and meta["constants"]["PARTICLES_PER_TAG_HOUR"] == 5
@@ -454,9 +521,8 @@ def test_changed_constants_invalidate(offline, monkeypatch):
     assert load_run(PAST, NOW) is None
 
 
-def test_old_format_invalidates(offline, tmp_path):
-    run_date(PAST, NOW, lambda f, s: None)
-    path = tmp_path / "runs" / "2023-11-05" / "run.json"
+def test_old_format_invalidates(offline):
+    path = run_date(PAST, NOW, lambda f, s: None).out_dir / "run.json"
     meta = json.loads(path.read_text())
     meta["format_version"] = 1
     path.write_text(json.dumps(meta))
@@ -474,11 +540,97 @@ def test_upstream_error_propagates_and_leaves_no_run(offline, monkeypatch, tmp_p
     assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())
 
 
-def test_load_run_needs_complete_marker_and_all_frames(offline, tmp_path):
-    run_date(PAST, NOW, lambda f, s: None)
+def test_load_run_needs_complete_marker_and_all_frames(offline):
+    folder = run_date(PAST, NOW, lambda f, s: None).out_dir
     assert isinstance(load_run(PAST, NOW), RunResult)
-    folder = tmp_path / "runs" / "2023-11-05"
     (folder / "frame_002.npz").unlink()
     assert load_run(PAST, NOW) is None
     (folder / "run.json").unlink()
     assert load_run(PAST, NOW) is None
+
+
+WINDOW_END = START + timedelta(hours=3)  # with the offline fixture's 3-hour window
+
+
+@pytest.mark.parametrize("made_after, final", [
+    (timedelta(days=10), True), (timedelta(days=10) - timedelta(seconds=1), False)])
+def test_final_after_follows_archive_finality(offline, made_after, final):
+    assert run.FINAL_AFTER == timedelta(days=10)
+    made_at = WINDOW_END + made_after
+    run_date(PAST, made_at, lambda f, s: None)
+    assert load_run(PAST, made_at + timedelta(minutes=30)) is not None  # fresh either way
+    assert (load_run(PAST, made_at + timedelta(days=1)) is not None) is final
+
+
+def test_held_result_survives_rebuild_and_cleanup(offline, tmp_path):
+    today = NOW.date()
+    r1 = run_date(today, NOW, lambda f, s: None)
+    before = r1.frame(0)
+    r2 = run_date(today, NOW + timedelta(hours=2), lambda f, s: None)
+    assert offline["simulate"] == 2 and r2.run_id != r1.run_id
+    assert load_run(today, NOW + timedelta(hours=2)).run_id == r2.run_id
+    for tag, field in r1.frame(0).items():  # r1 is exactly 2 h old: kept for its readers
+        np.testing.assert_array_equal(field, before[tag])
+    r3 = run_date(today, NOW + timedelta(hours=3, minutes=1), lambda f, s: None)
+    names = sorted(p.name for p in (tmp_path / "runs" / today.isoformat()).iterdir())
+    assert names == sorted(["current.json", r2.run_id, r3.run_id])  # r1 (3 h old) removed
+
+
+@pytest.mark.parametrize("pointer", [None, "{", '{"run_id": 5}', '{"run_id": "../x"}',
+                                     '{"run_id": "20261111T073000Z-00000000"}'])
+def test_missing_or_bad_pointer_gives_none(offline, tmp_path, pointer):
+    run_date(PAST, NOW, lambda f, s: None)
+    path = tmp_path / "runs" / "2023-11-05" / "current.json"
+    if pointer is None:
+        path.unlink()
+    else:
+        path.write_text(pointer)
+    assert load_run(PAST, NOW) is None
+
+
+def test_cleanup_rule(tmp_path):
+    folder = tmp_path / "runs" / "2023-11-05"
+    names = {
+        "old": "20261111T040000Z-aaaaaaaa", "current": "20261111T030000Z-bbbbbbbb",
+        "recent": "20261111T060000Z-cccccccc", "build": ".20261111T040000Z-dddddddd.tmp-x",
+        "fresh_build": ".20261111T070000Z-eeeeeeee.tmp-y", "other": "notes",
+    }
+    for name in names.values():
+        (folder / name).mkdir(parents=True)
+    run._set_current(PAST, names["current"])
+    run._cleanup(PAST, NOW)  # 07:30
+    left = {p.name for p in folder.iterdir()}
+    assert left == {"current.json", names["current"], names["recent"], names["fresh_build"],
+                    names["other"]}
+
+
+def test_simultaneous_builds_both_succeed(offline, monkeypatch, tmp_path):
+    barrier = threading.Barrier(2, timeout=30)
+    fake_fires = run.fire_emissions
+
+    def fires_after_both_started(*a):
+        barrier.wait()  # both builds have passed the cache check
+        return fake_fires(*a)
+
+    monkeypatch.setattr(run, "fire_emissions", fires_after_both_started)
+    results, errors = [], []
+
+    def build():
+        try:
+            results.append(run_date(PAST, NOW, lambda f, s: None))
+        except Exception as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=build) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and len(results) == 2 and offline["simulate"] == 2
+    assert results[0].run_id != results[1].run_id
+    folder = tmp_path / "runs" / "2023-11-05"
+    assert sorted(p.name for p in folder.iterdir()) == sorted(
+        ["current.json", results[0].run_id, results[1].run_id])
+    assert load_run(PAST, NOW).run_id in {r.run_id for r in results}
+    for r in results:
+        assert np.any(r.frame(0)["vehicles_delhi_ncr"])

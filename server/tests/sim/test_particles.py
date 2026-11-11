@@ -319,3 +319,32 @@ def test_one_cell_ridge_not_tunnelled_at_20_m_s():
     assert len(p) == 1000
     assert p.lon.max() < LON_MIN + ridge * CELL
     assert p.lon.mean() > LON_MIN + ridge * CELL - 0.3  # they reached it
+
+
+def _ground_reference(elev, lon, lat):
+    """The original per-call terrain look-up, kept as the reference for `_grounds`."""
+    from vayu.domain import cell_index, inside
+
+    ix, iy = cell_index(lon, lat)
+    ok = inside(ix, iy)
+    h = elev[np.where(ok, iy, 0), np.where(ok, ix, 0)]
+    return np.where(ok, np.maximum(h, 0.0), 0.0), ok
+
+
+def test_step_bit_identical_with_reference_terrain_lookup(monkeypatch):
+    rng = np.random.default_rng(5)
+    elev = rng.uniform(-50, 4000, (NY, NX)).astype(np.float32)
+    elev[:, col(82.0)] = 6000.0  # a ridge, so blocking is exercised
+    lon = np.r_[rng.uniform(LON_MIN - 0.5, LON_MAX + 0.5, 2000), [LON_MIN, LON_MAX, np.nan]]
+    p0 = make(lon, rng.uniform(5.5, 38.5, lon.size), z=300.0)
+    met = StubMet(u=6.0, v=-3.0, precip=0.5)
+    fast, fast_stats = run(p0, met, elev, hours=2, seed=11)
+
+    def reference(elev, lons, lats, pairs):
+        return [_ground_reference(elev, lons[i], lats[j]) for i, j in pairs]
+
+    monkeypatch.setattr(particles, "_grounds", reference)
+    ref, ref_stats = run(p0, met, elev, hours=2, seed=11)
+    assert fast_stats == ref_stats and sum(s.left_domain for s in ref_stats) > 0
+    for f in ("lon", "lat", "age_s", "z_m", "tag", "mass0_kg", "frac"):
+        np.testing.assert_array_equal(getattr(fast, f), getattr(ref, f))

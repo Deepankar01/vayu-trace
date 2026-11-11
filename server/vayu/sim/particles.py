@@ -95,12 +95,21 @@ class StepStats:
     missing_met: int  # met sample (u, v or blh) was NaN at the start position
 
 
-def _ground(elev: np.ndarray, lon: np.ndarray, lat: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(terrain height >= 0 at the nearest cell, inside-domain mask). Outside cells read 0."""
-    ix, iy = cell_index(lon, lat)
-    ok = inside(ix, iy)
-    h = elev[np.where(ok, iy, 0), np.where(ok, ix, 0)]
-    return np.where(ok, np.maximum(h, 0.0), 0.0), ok
+def _grounds(elev: np.ndarray, lons, lats, pairs) -> list[tuple[np.ndarray, np.ndarray]]:
+    """For each (i, j) in `pairs`: (terrain height >= 0 at the nearest cell of (lons[i], lats[j]),
+    inside-domain mask). Outside cells read 0.
+
+    Cell indices are computed once per distinct longitude and latitude array (the axes are
+    independent), so the seven look-ups in a step cost three index computations per axis.
+    """
+    ix, iy = cell_index(np.stack(lons), np.stack(lats))
+    ground = np.maximum(elev, 0.0).ravel()
+    nx = elev.shape[1]
+    out = []
+    for i, j in pairs:
+        ok = inside(ix[i], iy[j])
+        out.append((np.where(ok, ground[np.where(ok, iy[j] * nx + ix[i], 0)], 0.0), ok))
+    return out
 
 
 def step(
@@ -161,23 +170,21 @@ def step(
 
     # 2. Terrain blocking.
     ceiling = p.z_m + 0.5 * blh
-    h_here, in_here = _ground(elev, p.lon, p.lat)
-    h_full, in_full = _ground(elev, lon_new, lat_new)
-    h_x, in_x = _ground(elev, lon_new, p.lat)
-    h_y, in_y = _ground(elev, p.lon, lat_new)
     lon_mid = p.lon + 0.5 * dlon
     lat_mid = p.lat + 0.5 * dlat
+    # Index 0: current position, 1: proposed, 2: midpoint (per axis).
+    (h_here, in_here), (h_full, in_full), (h_x, in_x), (h_y, in_y), mid_x, mid_y, mid_full = (
+        _grounds(elev, (p.lon, lon_new, lon_mid), (p.lat, lat_new, lat_mid),
+                 ((0, 0), (1, 1), (1, 0), (0, 1), (2, 0), (0, 2), (2, 2))))
 
     def passable(h, ok):  # a cell outside the domain counts as passable
         return ~ok | (h <= ceiling)
 
-    ok_x = passable(h_x, in_x) & passable(*_ground(elev, lon_mid, p.lat))
-    ok_y = passable(h_y, in_y) & passable(*_ground(elev, p.lon, lat_mid))
+    ok_x = passable(h_x, in_x) & passable(*mid_x)
+    ok_y = passable(h_y, in_y) & passable(*mid_y)
     # The full (diagonal) move also needs one orthogonal neighbour on the way to be passable,
     # so a parcel cannot cut a corner through a diagonal one-cell ridge.
-    ok_full = (
-        passable(h_full, in_full) & passable(*_ground(elev, lon_mid, lat_mid)) & (ok_x | ok_y)
-    )
+    ok_full = passable(h_full, in_full) & passable(*mid_full) & (ok_x | ok_y)
     choice = np.where(ok_full, 0, np.where(ok_x, 1, np.where(ok_y, 2, 3)))
     lon = np.where((choice == 0) | (choice == 1), lon_new, p.lon)
     lat = np.where((choice == 0) | (choice == 2), lat_new, p.lat)
