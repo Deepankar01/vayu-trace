@@ -23,7 +23,7 @@ ARCHIVE_LAG = timedelta(days=5)  # hours older than now - this come from the arc
 FORECAST_TTL_S = 3600
 ARCHIVE_FINAL_AFTER = timedelta(days=10)  # reanalysis publication lag: younger days may be holes
 ARCHIVE_PROVISIONAL_TTL_S = 6 * 3600
-MAX_RETRIES = 5  # on HTTP 429, sleeping 1, 2, 4, 8, 16 s
+MAX_RETRIES = 5  # on HTTP 429 or an unusable 200 body, sleeping 1, 2, 4, 8, 16 s
 MAX_PAST_DAYS, MAX_FORECAST_DAYS = 92, 16  # Open-Meteo limits
 _COMMON = {"wind_speed_unit": "ms", "timezone": "GMT"}
 
@@ -34,20 +34,54 @@ def _utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
+class _BadBody(Exception):
+    """A 200 reply whose body is not a usable Open-Meteo hourly reply."""
+
+
+def _check_body(raw: bytes, params: dict) -> None:
+    """Raise _BadBody unless `raw` is JSON shaped like a reply to `params`: an object, or a list
+    of one object per requested point, each with `hourly.time` and every requested variable.
+    `{"error": true, "reason": ...}` is an upstream error, whatever the status code."""
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise _BadBody("not JSON") from None
+    if isinstance(body, dict) and body.get("error"):
+        raise _BadBody(f"error reply ({body.get('reason') or 'no reason given'})")
+    items = body if isinstance(body, list) else [body]
+    n_points = len(str(params.get("latitude", "")).split(","))
+    if not items or (isinstance(body, list) and n_points > 1 and len(items) != n_points):
+        raise _BadBody("wrong number of points")
+    wanted = ["time", *str(params.get("hourly", "")).split(",")]
+    for item in items:
+        hourly = item.get("hourly") if isinstance(item, dict) else None
+        if not isinstance(hourly, dict) or any(
+                not isinstance(hourly.get(name), list) for name in wanted if name):
+            raise _BadBody("no hourly data for the requested variables")
+
+
 def _get(url: str, params: dict, sleep: Callable[[float], None]) -> bytes:
-    """GET with exponential backoff on 429. Anything else non-200 raises at once."""
+    """GET with exponential backoff on 429 and on a 200 whose body fails `_check_body` (so an
+    unusable body never reaches the cache). Anything else non-200 raises at once."""
+    problem = "HTTP 429"
     for attempt in range(MAX_RETRIES + 1):
         try:
             resp = httpx.get(url, params=params, timeout=120)
         except httpx.HTTPError as exc:
             raise UpstreamError(SERVICE, f"request failed: {exc}") from exc
         if resp.status_code == 200:
-            return resp.content
-        if resp.status_code != 429:
+            try:
+                _check_body(resp.content, params)
+                return resp.content
+            except _BadBody as exc:
+                problem = f"unusable reply ({exc})"
+        elif resp.status_code != 429:
             raise UpstreamError(SERVICE, f"HTTP {resp.status_code} from {url}")
+        else:
+            problem = "HTTP 429"
         if attempt < MAX_RETRIES:
             sleep(2**attempt)
-    raise UpstreamError(SERVICE, f"HTTP 429 from {url} after {MAX_RETRIES} retries")
+    raise UpstreamError(SERVICE, f"{problem} from {url} after {MAX_RETRIES} retries")
 
 
 def _cache_key(url: str, params: dict) -> str:

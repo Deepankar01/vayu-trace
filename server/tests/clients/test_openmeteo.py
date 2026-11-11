@@ -304,3 +304,89 @@ def test_recorded_forecast_through_fetch_met(mock):
     field = MetField(raw)
     assert field.blh_estimated is False  # mixing height came from the feed, not the estimate
     assert np.isfinite(field.grid(0)["u"]).all()
+
+
+# --- a 200 reply that is not a usable body is never cached, and is retried like a 429
+
+
+def _good_cams() -> httpx.Response:
+    return httpx.Response(200, content=(FIX / "cams_2023-11-05.json").read_bytes())
+
+
+@pytest.mark.parametrize("bad", [
+    httpx.Response(200, text="streaming timeout"),
+    httpx.Response(200, json={"error": True, "reason": "Timeout while streaming"}),
+    httpx.Response(200, json={"hourly": {"time": ["2023-11-05T00:00"]}}),  # pm2_5 missing
+])
+def test_cams_bad_200_body_is_retried_and_not_cached(bad, tmp_path):
+    sleeps = []
+    start = datetime(2023, 11, 5, tzinfo=UTC)
+    with respx.mock() as m:
+        route = m.get(url__startswith=CAMS).mock(side_effect=[bad, _good_cams()])
+        pm = openmeteo.fetch_cams_pm25(28.0, 77.0, start, 24, sleep=sleeps.append)
+    assert route.call_count == 2 and sleeps == [1]
+    assert pm[0] == pytest.approx(114.8)
+    cached = [p.read_bytes() for p in (tmp_path / "cache" / "openmeteo").iterdir()]
+    assert cached == [(FIX / "cams_2023-11-05.json").read_bytes()]
+
+
+def test_bad_200_body_exhausted_raises_and_caches_nothing(tmp_path):
+    sleeps = []
+    with respx.mock() as m:
+        m.get(url__startswith=CAMS).respond(200, text="streaming timeout")
+        with pytest.raises(UpstreamError) as exc:
+            openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2023, 11, 5, tzinfo=UTC), 24,
+                                      sleep=sleeps.append)
+    assert exc.value.service == "open-meteo" and "unusable" in exc.value.message
+    assert sleeps == [1, 2, 4, 8, 16]
+    assert not (tmp_path / "cache" / "openmeteo").exists()
+    # a later good reply succeeds
+    with respx.mock() as m:
+        m.get(url__startswith=CAMS).mock(return_value=_good_cams())
+        pm = openmeteo.fetch_cams_pm25(28.0, 77.0, datetime(2023, 11, 5, tzinfo=UTC), 24)
+    assert pm[0] == pytest.approx(114.8)
+
+
+def _bad_first(bad, n_bad=1):
+    """Fake Open-Meteo answering `bad` to the first `n_bad` requests, then the normal reply."""
+    calls = {"n": 0}
+
+    def answer(request):
+        calls["n"] += 1
+        return bad if calls["n"] <= n_bad else fake_response(request)
+    return answer
+
+
+@pytest.mark.parametrize("endpoint,start", [
+    (ARCHIVE, datetime(2023, 11, 5, tzinfo=UTC)),
+    (FORECAST, datetime(2026, 11, 10, tzinfo=UTC)),
+])
+@pytest.mark.parametrize("bad", [
+    httpx.Response(200, text="streaming timeout"),
+    httpx.Response(200, json={"error": True, "reason": "Timeout while streaming"}),
+    httpx.Response(200, json=[{"latitude": 6.0}]),  # no hourly block
+])
+def test_met_bad_200_body_retried_and_never_cached(endpoint, start, bad, tmp_path):
+    sleeps = []
+    with respx.mock() as m:
+        m.get(url__startswith=endpoint).mock(side_effect=_bad_first(bad))
+        raw = openmeteo.fetch_met(start, 24, NOW, sleep=sleeps.append)
+    assert sleeps == [1]
+    assert np.isfinite(raw.variables["temperature_2m"]).all()
+    for p in (tmp_path / "cache" / "openmeteo").iterdir():
+        body = json.loads(p.read_bytes())
+        assert all("hourly" in item for item in body)
+
+
+def test_met_bad_body_exhausted_then_good_reply_succeeds(tmp_path):
+    bad = httpx.Response(200, text="streaming timeout")
+    with respx.mock() as m:
+        m.get(url__startswith=ARCHIVE).mock(side_effect=_bad_first(bad, n_bad=10**6))
+        with pytest.raises(UpstreamError) as exc:
+            openmeteo.fetch_met(old_start(), 24, NOW, sleep=lambda s: None)
+    assert "unusable" in exc.value.message
+    assert not (tmp_path / "cache" / "openmeteo").exists()
+    with respx.mock() as m:
+        m.get(url__startswith=ARCHIVE).mock(side_effect=fake_response)
+        raw = openmeteo.fetch_met(old_start(), 24, NOW, sleep=lambda s: None)
+    assert np.isfinite(raw.variables["temperature_2m"]).all()
