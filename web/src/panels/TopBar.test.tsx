@@ -2,7 +2,7 @@ import { act, fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { makeMeta } from "../test-utils/meta";
 import { renderPanel } from "../test-utils/panels";
-import { TopBar, windText } from "./TopBar";
+import { DATE_NOTE, TERRAIN_NOTE, TopBar, windText } from "./TopBar";
 
 describe("TopBar", () => {
   it("bounds the date input by the meta's min date and today (UTC)", () => {
@@ -54,7 +54,9 @@ describe("TopBar", () => {
   it("shows the requested date while its run builds, with the UTC note", () => {
     renderPanel(<TopBar date="2025-11-05" onDate={() => {}} />, { meta: null, status: "running" });
     expect(screen.getByLabelText("Run date")).toHaveValue("2025-11-05");
-    expect(screen.getByTitle("Run date (UTC day). Times shown in IST.")).toBeInTheDocument();
+    expect(screen.getByTitle(DATE_NOTE)).toBeInTheDocument();
+    expect(DATE_NOTE).toContain("Dates are UTC days");
+    expect(screen.getByRole("button", { name: "Terrain 3D" }).getAttribute("title")).toBe(TERRAIN_NOTE);
   });
   it("shows the IST clock for the playhead", () => {
     renderPanel(<TopBar date="2026-11-10" onDate={() => {}} />, { hour: 12 });

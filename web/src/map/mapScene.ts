@@ -16,7 +16,7 @@ import { declutterLabels } from "./layers/labelDeclutter";
 import { LABEL_ALL_ZOOM, LABEL_NCR_ZOOM, cityLabel, labelPriority, showLabel, cityLayers, type CityDatum } from "./layers/cities";
 import { fireLayers, prepareFires, windowData, type PreparedFires } from "./layers/fires";
 import { pathFetchDue, pathLayer, type PathFetched } from "./layers/path";
-import { PLUME_ROWS, colorizeInto, makeImageData, plumeLayer, type PlumeMode } from "./layers/plume";
+import { PLUME_ROWS, colorizeInto, gridBounds, makeImageData, plumeLayer, type PlumeMode } from "./layers/plume";
 import { PlumeComposer, missingPlumeHour, playheadPair, type HourKey } from "./layers/plumeComposer";
 import { userSourcesLayer } from "./layers/userSources";
 import { WIND_PARTICLES, WIND_TRAIL_POINTS, WindCache, windLayer } from "./layers/wind";
@@ -231,7 +231,7 @@ export class MapScene {
     colorizeInto(px, grid.nx, PLUME_ROWS, mode, a.value, b?.value ?? null, pair.t, a.haze, b?.haze ?? null);
     this.plumeVersion++;
     const image = this.upload(px, grid.nx, env.device);
-    return plumeLayer(image, this.plumeVersion, env.flatBeforeId);
+    return plumeLayer(image, this.plumeVersion, env.flatBeforeId, gridBounds(grid));
   }
 
   /** Write the pixels into the one texture this scene owns (or, without a device yet, an ImageData). */

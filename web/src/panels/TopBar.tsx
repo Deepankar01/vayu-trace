@@ -13,7 +13,10 @@ export const FALLBACK_MIN_DATE = "2018-04-01"; // server/vayu/api.py MIN_DATE, u
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
-export const DATE_NOTE = "Run date (UTC day). Times shown in IST.";
+export const DATE_NOTE =
+  "Run date (UTC day). Dates are UTC days: until 05:30 IST the latest date is yesterday's IST date. Times shown in IST.";
+export const TERRAIN_NOTE =
+  "3D relief is visual only; data layers are drawn flat and can appear offset from peaks when the map is tilted";
 const CALM_MS = 0.1;
 
 /**
@@ -149,7 +152,7 @@ export function TopBar({ date: requested, onDate, actions }: TopBarProps) {
           title="Hourly PM2.5 shown on the 24-hour AQI scale — indicative" />
         <Chip label="Wind" on={layers.wind} onClick={() => toggle("wind")} />
         <Chip label="Fires" on={layers.fires} onClick={() => toggle("fires")} />
-        <Chip label="Terrain 3D" on={layers.terrain} onClick={() => toggle("terrain")} />
+        <Chip label="Terrain 3D" on={layers.terrain} onClick={() => toggle("terrain")} title={TERRAIN_NOTE} />
       </div>
       <div className="spacer" />
       <div className="readouts" aria-label={city ? `Weather at ${city.name}` : "Weather"}>

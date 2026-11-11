@@ -22,8 +22,10 @@ import { aqiColor, pm25Ramp } from "../../lib/colors";
 
 export type PlumeMode = "pm25" | "aqi" | "diff";
 
-/** Domain edges [west, south, east, north] in degrees. */
-export const DOMAIN_BOUNDS: [number, number, number, number] = [66, 6, 98, 38];
+/** The run grid's edges [west, south, east, north] in degrees (from `meta.grid`). */
+export function gridBounds(g: { lon_min: number; lat_min: number; cell: number; nx: number; ny: number }): [number, number, number, number] {
+  return [g.lon_min, g.lat_min, g.lon_min + g.nx * g.cell, g.lat_min + g.ny * g.cell];
+}
 
 /**
  * Output rows after Mercator resampling (nearest source row per output row). The thinnest source
@@ -210,11 +212,14 @@ export function fieldToImageData(
  * The plume layer. `image` is the app-owned texture (updated in place every frame; `version`
  * changes so deck.gl redraws) or, before the GPU device is known, an ImageData.
  */
-export function plumeLayer(image: Texture | ImageData, version: number, beforeId: string | undefined) {
+export function plumeLayer(
+  image: Texture | ImageData, version: number, beforeId: string | undefined,
+  bounds: [number, number, number, number],
+) {
   return new BitmapLayer({
     id: "plume",
     image,
-    bounds: DOMAIN_BOUNDS,
+    bounds,
     beforeId,
     // linear filtering: cells blend instead of looking blocky
     textureParameters: { minFilter: "linear", magFilter: "linear", mipmapFilter: "none" },

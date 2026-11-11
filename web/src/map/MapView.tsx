@@ -53,6 +53,8 @@ export interface MapViewProps {
   onDevice?: (device: Device) => void;
 }
 
+export const BOUNDARY_ATTRIBUTION = "Boundaries: datta07/INDIAN-SHAPEFILES (MIT)";
+
 const demSource = (): maplibregl.RasterDEMSourceSpecification => ({
   type: "raster-dem",
   tiles: [TERRAIN_TILES],
@@ -95,7 +97,7 @@ function setupMap(map: maplibregl.Map, terrain: boolean): MapReadyInfo {
     below,
   );
 
-  map.addSource("india-states", { type: "geojson", data: "/india-boundary.geojson" });
+  map.addSource("india-states", { type: "geojson", data: "/india-boundary.geojson", attribution: BOUNDARY_ATTRIBUTION });
   map.addSource("india-outline", { type: "geojson", data: "/india-outline.geojson" });
   map.addLayer(
     {

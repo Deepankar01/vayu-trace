@@ -143,6 +143,8 @@ export interface StoreDeps {
   baseUrl?: string;
 }
 
+const TAG_KINDS = new Set<string>(["fire", "firefc", "sector", "user"]);
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 export function createAppStore(deps: StoreDeps = {}) {
@@ -201,6 +203,8 @@ export function createAppStore(deps: StoreDeps = {}) {
       const known = new Set(meta.tags.map((t) => t.id));
       const orphan = meta.cities.flatMap((c) => Object.keys(c.by_tag)).find((id) => !known.has(id));
       if (orphan) set({ error: `city series has tag '${orphan}' that the run's meta does not list` });
+      const odd = meta.tags.find((t) => !TAG_KINDS.has(t.kind));
+      if (odd) set({ error: `tag '${odd.id}' has unknown kind '${String(odd.kind)}'` });
       const hour = clamp(get().hour, 0, Math.max(0, meta.hours.length - 1));
       set((s) => ({
         meta, hour,

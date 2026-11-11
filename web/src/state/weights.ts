@@ -49,12 +49,15 @@ function weightOf(tag: TagMeta, r: Rules): number {
       return r.firesContinue ? r.fireScaling : 0;
     case "user":
       return r.userOn(tag.id) ? 1 : 0;
-    default: {
+    case "sector": {
       const base = r.sliders[tag.sector as Sector] ?? 1;
       if (tag.id === "vehicles_delhi_ncr" && r.region.delhiOddEven) return base * ODD_EVEN_VEHICLE_FACTOR;
       if (tag.id === "dust_delhi_ncr" && r.region.delhiConstructionBan) return base * 0;
       return base;
     }
+    default:
+      // never a silent weight of 1: an unknown kind is a contract break with the server
+      throw new Error(`tag '${tag.id}' has unknown kind '${String(tag.kind)}'`);
   }
 }
 

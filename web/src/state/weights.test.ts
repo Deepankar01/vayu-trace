@@ -16,6 +16,12 @@ describe("selectWeights", () => {
     expect(selectBaselineWeights({ meta: null })).toEqual({});
   });
 
+  it("throws for a tag of unknown kind instead of weighting it 1", () => {
+    const meta = makeMeta();
+    meta.tags = [...meta.tags, { ...meta.tags[2], id: "mystery", kind: "volcano" as never }];
+    expect(() => selectWeights(base({ meta }))).toThrow("tag 'mystery' has unknown kind 'volcano'");
+  });
+
   it("gives every tag weight 1 at the defaults", () => {
     const w = selectWeights(base());
     expect(Object.keys(w).sort()).toEqual(makeMeta().tags.map((t) => t.id).sort());

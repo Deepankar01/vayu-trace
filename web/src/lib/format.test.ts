@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MINUS, compass16, fmtError, fmtIST, fmtISTDay, fmtISTHour, fmtNumber, fmtShare, fmtSharesToWhole, istDateKey,
+  MINUS, compass16, fmtError, fmtIST, fmtISTDay, fmtISTHour, fmtNumber, fmtShare, fmtSharesToWhole,
 } from "./format";
 
 describe("fmtShare", () => {
@@ -41,7 +41,6 @@ describe("IST formatting", () => {
   it("accepts a Date", () => expect(fmtIST(new Date(Date.UTC(2025, 10, 7, 12, 30)))).toBe("07 Nov 2025 · 18:00 IST"));
   it("crosses midnight into the next IST day", () => {
     expect(fmtIST("2025-11-07T19:00:00Z")).toBe("08 Nov 2025 · 00:30 IST");
-    expect(istDateKey("2025-11-07T19:00:00Z")).toBe("2025-11-08");
   });
   it("short forms", () => {
     expect(fmtISTHour(t)).toBe("18:00 IST");

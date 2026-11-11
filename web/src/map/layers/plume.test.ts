@@ -1,7 +1,7 @@
 import { aqiColor, pm25Ramp } from "../../lib/colors";
 import { pm25ToAqi } from "../../lib/aqi";
 import {
-  PLUME_ROWS, DIFF_DEAD_BAND, DIFF_SATURATION, colorizeInto, fieldToImageData, hazeOpacityFactor, mercatorY,
+  PLUME_ROWS, DIFF_DEAD_BAND, DIFF_SATURATION, colorizeInto, fieldToImageData, gridBounds, hazeOpacityFactor, mercatorY,
   resampleRowsToMercator,
 } from "./plume";
 
@@ -121,6 +121,13 @@ describe("fieldToImageData", () => {
     colorizeInto(ref, 3, 1, "pm25", new Float32Array([100, 100, 100]), null, 0, null, null);
     expect(Array.from(mid.slice(0, 8))).toEqual(Array.from(ref.slice(0, 8)));
     expect(mid[11]).toBe(0);
+  });
+});
+
+describe("gridBounds", () => {
+  it("derives the plume bounds from meta.grid (the model domain 66-98 E, 6-38 N)", () => {
+    const b = gridBounds({ lon_min: 66, lat_min: 6, cell: 0.1, nx: 320, ny: 320 });
+    expect(b.map((v) => Math.round(v * 1e9) / 1e9)).toEqual([66, 6, 98, 38]);
   });
 });
 

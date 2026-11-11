@@ -701,6 +701,14 @@ describe("addSource keeps series with nulls; frame errors clear; unknown tags su
     expect(h.store.frames.get(0)).toBeDefined();
   });
 
+  it("reports a tag of unknown kind at ingest as an error string", async () => {
+    const meta = makeMeta();
+    meta.tags = [...meta.tags, { ...meta.tags[2], id: "mystery", kind: "volcano" as never }];
+    const h = harness(readyServer(() => meta));
+    await h.get().startRun("2026-11-10");
+    expect(h.get().error).toBe("tag 'mystery' has unknown kind 'volcano'");
+  });
+
   it("reports a city series whose tag is not in meta.tags as an error string", async () => {
     const meta = makeMeta();
     meta.cities[0].by_tag.mystery_tag = [1];

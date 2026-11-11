@@ -70,12 +70,6 @@ export function fmtISTShort(d: Date | string): string {
   return `${p2(t.d)} ${MONTHS[t.mo]} · ${p2(t.h)}:${p2(t.mi)}`;
 }
 
-/** IST calendar date "YYYY-MM-DD". */
-export function istDateKey(d: Date | string): string {
-  const t = ist(d);
-  return `${t.y}-${p2(t.mo + 1)}-${p2(t.d)}`;
-}
-
 const POINTS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
 
 /** 16-point compass name of a direction in degrees (where the wind blows FROM); "Calm" for null. */

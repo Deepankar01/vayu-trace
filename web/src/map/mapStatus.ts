@@ -14,6 +14,3 @@ export interface MapStatus {
 }
 
 export const useMapStatus = create<MapStatus>()(() => ({ plumeLoadingHour: null, pathHour: null }));
-
-/** True while the plume does not match the playhead (see `plumeLoadingHour`). */
-export const selectPlumeLoading = (s: MapStatus) => s.plumeLoadingHour !== null;
