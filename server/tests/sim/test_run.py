@@ -540,6 +540,14 @@ def test_upstream_error_propagates_and_leaves_no_run(offline, monkeypatch, tmp_p
     assert not (tmp_path / "runs").exists() or not any((tmp_path / "runs").iterdir())
 
 
+def test_tags_outside_catalogue_invalidate(offline):
+    path = run_date(PAST, NOW, lambda f, s: None).out_dir / "run.json"
+    meta = json.loads(path.read_text())
+    meta["tags"] = [*meta["tags"], "coal_mars"]
+    path.write_text(json.dumps(meta))
+    assert load_run(PAST, NOW) is None
+
+
 def test_load_run_needs_complete_marker_and_all_frames(offline):
     folder = run_date(PAST, NOW, lambda f, s: None).out_dir
     assert isinstance(load_run(PAST, NOW), RunResult)

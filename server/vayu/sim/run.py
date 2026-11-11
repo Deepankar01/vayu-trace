@@ -564,7 +564,7 @@ def load_run(day: date, now: datetime) -> RunResult | None:
     """The current stored run for `day` if it is still valid at `now`, else None (re-run).
 
     Valid means: the pointer names a complete run; same format version and constants snapshot
-    as the current code; its start equals `run_window(day, now)`'s; and either it was final when
+    as the current code; its tags all in the current catalogue; its start equals `run_window(day, now)`'s; and either it was final when
     made (made at least FINAL_AFTER after its window ended) or it was made less than FRESH_FOR
     before `now`.
     """
@@ -575,6 +575,8 @@ def load_run(day: date, now: datetime) -> RunResult | None:
     if res is None or res.made_at is None:
         return None
     if res.format_version != FORMAT_VERSION or res.constants != constants_snapshot():
+        return None
+    if not set(res.tags) <= set(TAG_IDS):
         return None
     if res.start != run_window(day, now)[0]:
         return None

@@ -9,6 +9,8 @@ dependencies = [
     "httpx",
     "pillow",
     "netcdf4>=1.7.5.1.post1",
+    "fastapi>=0.162.4",
+    "uvicorn>=0.54.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,10 @@ packages = ["vayu"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    # starlette's TestClient prefers httpx2, which is not a dependency here
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]
 
 [tool.ruff]
 line-length = 100
