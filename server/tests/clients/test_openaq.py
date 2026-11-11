@@ -432,3 +432,33 @@ def test_stale_sensor_last_does_not_drop_a_live_sensor(mock):
     mock.spans[10] = span(10, last=six_days)
     serve(mock, [loc(1, 0.01)], {10: [row(0, 5.0)]})
     assert run().station_count == 1
+
+
+def test_failed_span_lookup_is_unknown_and_the_sensor_still_queried(mock):
+    mock.spans[10] = httpx.Response(500)
+    serve(mock, [loc(1, 0.01)], {10: [row(0, 3.0)]})
+    out = run()
+    assert out.station_count == 1 and out.values[0] == 3.0
+    mock.spans[10] = span(10, last="2022-10-31T00:00:00Z")  # the failure was not cached
+    assert run().station_count == 0
+
+
+def test_spans_requested_only_for_stations_still_needed(mock):
+    locs = [loc(i, 0.01 * i) for i in range(1, 9)]  # 8 stations, every one has data
+    serve(mock, locs, {i * 10: [row(0, float(i))] for i in range(1, 9)})
+    assert run().station_count == 5
+    looked = {c.request.url.path for c in mock.calls
+              if c.request.url.path.startswith("/v3/sensors/") and
+              not c.request.url.path.endswith("/hours")}
+    assert looked == {f"/v3/sensors/{i * 10}" for i in range(1, 6)}
+
+
+def test_span_lookahead_continues_past_stations_without_data(mock):
+    # the two nearest have no data in the window: two more stations are looked up later
+    locs = [loc(i, 0.01 * i) for i in range(1, 9)]
+    serve(mock, locs, {10: [], 20: [], **{i * 10: [row(0, float(i))] for i in range(3, 9)}})
+    assert run().station_count == 5
+    looked = {c.request.url.path for c in mock.calls
+              if c.request.url.path.startswith("/v3/sensors/") and
+              not c.request.url.path.endswith("/hours")}
+    assert looked == {f"/v3/sensors/{i * 10}" for i in range(1, 8)}

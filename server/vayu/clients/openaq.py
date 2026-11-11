@@ -254,6 +254,15 @@ def sensor_span(sensor_id: int, sleep: Callable[[float], None] = time.sleep
             _parse_ts((r.get("datetimeLast") or {}).get("utc")))
 
 
+def _span_or_unknown(sensor_id: int, sleep) -> tuple[datetime | None, datetime | None]:
+    """`sensor_span`, best effort: a failed lookup (nothing cached) means unknown, so the
+    sensor is still tried. Only hourly fetches may fail `city_pm25`."""
+    try:
+        return sensor_span(sensor_id, sleep)
+    except UpstreamError:
+        return None, None
+
+
 def _may_overlap(first: datetime | None, last: datetime | None,
                  start: datetime, end: datetime) -> bool:
     """False only when data from [first, last] provably cannot reach [start, end). `last` comes
@@ -338,7 +347,9 @@ def city_pm25(
     median is taken per hour over the stations that have a value.
 
     Hourly data is requested only for sensors whose own availability (`sensor_span`) can overlap
-    the window; when none can, no hourly request is made at all.
+    the window; when none can, no hourly request is made at all. Spans are looked up nearest
+    first, only for as many stations as could still be needed, and a failed lookup counts as
+    unknown (the sensor is tried).
     """
     start = _utc(start)
     if start.minute or start.second or start.microsecond:
@@ -349,13 +360,19 @@ def city_pm25(
     end = start + hours * HOUR
     candidates = [st for st in stations_near(city, sleep)
                   if _may_overlap(st.first, st.last, start, end)][:MAX_CANDIDATES]
-    sids = list(dict.fromkeys(s for st in candidates for s in st.sensor_ids))
-    with ThreadPoolExecutor(SPAN_WORKERS) as pool:
-        spans = dict(zip(sids, pool.map(lambda sid: sensor_span(sid, sleep), sids)))
+    spans: dict[int, tuple[datetime | None, datetime | None]] = {}
     used: list[np.ndarray] = []
-    for st in candidates:
+    for i, st in enumerate(candidates):
         if len(used) == MAX_STATIONS:
             break
+        if any(sid not in spans for sid in st.sensor_ids):
+            # Look ahead only as far as could still be needed: each station can add at most
+            # one to `used`, so the next MAX_STATIONS - len(used) stations are fetched together.
+            batch = candidates[i:i + MAX_STATIONS - len(used)]
+            todo = list(dict.fromkeys(
+                sid for b in batch for sid in b.sensor_ids if sid not in spans))
+            with ThreadPoolExecutor(SPAN_WORKERS) as pool:
+                spans.update(zip(todo, pool.map(lambda sid: _span_or_unknown(sid, sleep), todo)))
         live = [sid for sid in st.sensor_ids if _may_overlap(*spans[sid], start, end)]
         if not live:
             continue

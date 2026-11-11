@@ -13,6 +13,7 @@ is superseded. User-dropped sources are simulated on request into the same extra
 The API serves per-tag fields and never applies source weights. JSON never contains NaN
 (missing values are null), and no response body or log line contains an API key.
 """
+import errno
 import json
 import logging
 import math
@@ -23,6 +24,7 @@ import threading
 import traceback
 import uuid
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -160,6 +162,14 @@ def _write_json(path: Path, obj) -> None:
     os.replace(tmp, path)
 
 
+class _BuildFilesGone(Exception):
+    """A file of the build a request resolved to could not be read. Raised only by
+    `_build_files` for paths inside that build's run or extras directory."""
+
+    def __init__(self, build_id: str):
+        self.build_id = build_id
+
+
 class _Rebuilt(Exception):
     """The build a request refers to is gone: superseded (`build_id` is the current one) or
     expired with nothing current (`build_id` None)."""
@@ -265,6 +275,21 @@ def _parse_day(text, now: datetime) -> date:
     if day > now.date():
         raise HTTPException(422, f"{day} is in the future (today is {now.date()} UTC)")
     return day
+
+
+@contextmanager
+def _build_files(b: _Build):
+    """Turn a FileNotFoundError for a path inside the build's own run or extras directory into
+    `_BuildFilesGone`, answered by comparing the build with the one current now. Any other
+    missing file stays an ordinary error (generic 500)."""
+    try:
+        yield
+    except FileNotFoundError as exc:
+        own = (os.path.abspath(b.run.out_dir), os.path.abspath(b.extras_dir))
+        name = os.path.abspath(exc.filename) if exc.filename else None
+        if name is not None and any(name == d or name.startswith(d + os.sep) for d in own):
+            raise _BuildFilesGone(b.run.run_id) from exc
+        raise
 
 
 def _resolve(run_id: str, build: str | None) -> _Build:
@@ -396,7 +421,7 @@ def _user_field(b: _Build, tag: str, hour: int) -> np.ndarray:
         if sub is None:
             sub = RunResult.from_dir(b.extras_dir / tag)
             if sub is None:  # cleaned up with its superseded run
-                raise FileNotFoundError(b.extras_dir / tag)
+                raise _missing(b.extras_dir / tag)
             b._user_runs[tag] = sub
     return sub.frame(hour - meta["start_hour"])[SIM_TAG]
 
@@ -428,10 +453,14 @@ def _reserve_user_tag(b: _Build) -> str:
         return tag
 
 
+def _missing(path: Path) -> FileNotFoundError:
+    return FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+
+
 def _require_run_dir(run) -> None:
-    """Raise FileNotFoundError (answered as 409) if the build was cleaned up meanwhile."""
+    """Raise FileNotFoundError if the build was cleaned up meanwhile."""
     if not run.out_dir.is_dir():
-        raise FileNotFoundError(run.out_dir)
+        raise _missing(run.out_dir)
 
 
 def _add_source(b: _Build, req: "SourceRequest", now: datetime) -> dict:
@@ -478,6 +507,11 @@ def _add_source(b: _Build, req: "SourceRequest", now: datetime) -> dict:
             b._user_runs[tag] = sub
     except BaseException:
         shutil.rmtree(out_dir, ignore_errors=True)
+        (b.extras_dir / f"{tag}.json").unlink(missing_ok=True)  # never resurrect a half tag
+        with b.lock:
+            if b._users is not None:
+                b._users.pop(tag, None)
+            b._user_runs.pop(tag, None)
         raise
     finally:
         with b.lock:
@@ -523,18 +557,19 @@ async def _rebuilt(request: Request, exc: _Rebuilt):
     return _gone(exc.build_id)
 
 
-@app.exception_handler(FileNotFoundError)
-async def _vanished(request: Request, exc: FileNotFoundError):
-    """A build's files disappeared under a request (the run was superseded and cleaned up)."""
-    run_id = request.path_params.get("run_id")
-    if run_id is None:
-        _log_exception(f"{request.method} {request.url.path} failed", exc)
-        return CleanJSONResponse({"detail": "internal server error"}, status_code=500)
-    try:
-        run = await run_in_threadpool(load_run, date.fromisoformat(run_id), _now())
-    except (ValueError, OSError):
-        run = None
-    return _gone(None if run is None else run.run_id)
+@app.exception_handler(_BuildFilesGone)
+async def _vanished(request: Request, exc: _BuildFilesGone):
+    """The resolved build's files disappeared under the request. 409 only if that build is no
+    longer current (superseded or expired); a missing file in the CURRENT build is a bug: 500."""
+    day = date.fromisoformat(request.path_params["run_id"])
+    run = await run_in_threadpool(load_run, day, _now())
+    if run is None:
+        return _gone(None)
+    if run.run_id != exc.build_id:
+        return _gone(run.run_id)
+    _log_exception(f"{request.method} {request.url.path}: file missing in current build "
+                   f"{exc.build_id}", exc.__cause__)
+    return CleanJSONResponse({"detail": "internal server error"}, status_code=500)
 
 
 @app.exception_handler(UpstreamError)
@@ -600,8 +635,9 @@ def get_run(run_id: str):
 def get_meta(run_id: str):
     b = _resolve(run_id, None)
     run = b.run
-    ex = _extras(b)
-    users = _user_sources(b)
+    with _build_files(b):
+        ex = _extras(b)
+        users = _user_sources(b)
     by_id = {t.id: t for t in TAGS}
     tags = [{"id": t, "kind": by_id[t].kind, "sector": by_id[t].sector,
              "region": by_id[t].region, "label": by_id[t].label, "color": by_id[t].color}
@@ -643,10 +679,11 @@ def get_frame(run_id: str, hour: int, build: str | None = None, extra: str | Non
     run = b.run
     _check_hour(run, hour)
     extras = [t for t in (extra or "").split(",") if t]
-    fields = dict(run.frame(hour))
-    for tag in extras:
-        fields[tag] = _user_field(b, tag, hour)
-    fields[HAZE] = run.haze(hour)
+    with _build_files(b):
+        fields = dict(run.frame(hour))
+        for tag in extras:
+            fields[tag] = _user_field(b, tag, hour)
+        fields[HAZE] = run.haze(hour)
     headers = {"X-Vayu-Build": run.run_id,
                # a URL without ?build= may serve a newer build later
                "Cache-Control": "private, max-age=3600" if build else "no-cache"}
@@ -655,7 +692,9 @@ def get_frame(run_id: str, hour: int, build: str | None = None, extra: str | Non
 
 @app.get("/api/runs/{run_id}/fires")
 def get_fires(run_id: str, build: str | None = None):
-    return _json(_extras(_resolve(run_id, build))["fires"])
+    b = _resolve(run_id, build)
+    with _build_files(b):
+        return _json(_extras(b)["fires"])
 
 
 @app.get("/api/runs/{run_id}/wind/{hour}")
@@ -711,7 +750,9 @@ def get_measured(run_id: str, city_id: str, build: str | None = None):
 
 @app.post("/api/runs/{run_id}/sources")
 def post_source(run_id: str, body: SourceRequest, build: str | None = None):
-    return _json(_add_source(_resolve(run_id, build), body, _now()))
+    b = _resolve(run_id, build)
+    with _build_files(b):
+        return _json(_add_source(b, body, _now()))
 
 
 @app.get("/api/validation")

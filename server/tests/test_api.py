@@ -1,3 +1,4 @@
+import errno
 import gzip
 import json
 import logging
@@ -43,14 +44,16 @@ class FakeRun:
         self.made_at, self.format_version = MADE, 3
         self.constants = {"SPINUP_H": SPINUP}
         self.nan_over_delhi = None  # (tag, hour): that tag is NaN over Delhi's 3x3 block
+        self.broken_frame = False  # a frame file missing although the run is current
 
     @property
     def run_id(self):
         return self.out_dir.name
 
     def frame(self, h):
-        if not self.out_dir.is_dir():  # like RunResult: its files went with the directory
-            raise FileNotFoundError(self.out_dir / f"frame_{h:03d}.npz")
+        path = self.out_dir / f"frame_{h:03d}.npz"
+        if not self.out_dir.is_dir() or self.broken_frame:  # like np.load on a missing file
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory", str(path))
         zero = np.zeros((NY, NX), np.float32)
         zero[0, 0] = np.nan  # mixing height missing here: every tag NaN
         out = {t: zero.copy() for t in self.tags}
@@ -519,6 +522,56 @@ def test_run_directory_removed_under_a_cached_build_is_409(env):
     shutil.rmtree(env["fake"].out_dir)  # superseded and cleaned up
     r = api_frame_with_held_build(c, held)
     assert r.status_code == 409 and r.json() == {"detail": "run expired", "build_id": None}
+
+
+def test_superseded_build_files_gone_is_409_with_new_id(env, tmp_path):
+    c = ready(env)
+    held = api._S.build_for(env["fake"])
+    shutil.rmtree(env["fake"].out_dir)
+    env["run"] = FakeRun(tmp_path, run_id="20261111T070000Z-bbbbbbbb")  # the new current build
+    r = api_frame_with_held_build(c, held)
+    assert r.status_code == 409
+    assert r.json() == {"detail": "run was rebuilt", "build_id": "20261111T070000Z-bbbbbbbb"}
+
+
+def test_file_missing_in_the_current_build_is_500_not_409(env, caplog):
+    c = ready(env)
+    env["fake"].broken_frame = True  # the run is still current: this is a bug, not a rebuild
+    with caplog.at_level(logging.ERROR, logger="vayu.api"):
+        r = c.get(f"/api/runs/2023-11-05/frames/0?build={env['fake'].run_id}")
+    assert r.status_code == 500 and r.json() == {"detail": "internal server error"}
+    assert "file missing in current build" in caplog.text and "frame_000.npz" in caplog.text
+
+
+def test_unrelated_missing_file_is_500(env, monkeypatch):
+    def no_terrain():
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", "/nowhere/terrain.npy")
+
+    monkeypatch.setattr(api, "elevation", no_terrain)
+    r = ready(env).get("/api/runs/2023-11-05/cities/delhi/path/0")
+    assert r.status_code == 500 and r.json() == {"detail": "internal server error"}
+
+
+def test_failed_publish_leaves_no_tag_on_disk(env, monkeypatch):
+    c = ready(env)
+    real_sorted = sorted
+
+    def boom(*a, **kw):  # fails inside the publish step, after user_1.json was written
+        raise RuntimeError("publish failed")
+
+    extras = env["fake"].out_dir.parent / f"{env['fake'].run_id}.extras"
+    c.get("/api/runs/2023-11-05/meta")  # user sources loaded: the next `sorted` is the publish
+    written = []
+    real_write = api._write_json
+    monkeypatch.setattr(api, "_write_json", lambda path, obj: (written.append(path.name),
+                                                               real_write(path, obj)))
+    monkeypatch.setattr(api, "sorted", boom, raising=False)
+    r = c.post("/api/runs/2023-11-05/sources", json=SOURCE)
+    monkeypatch.setattr(api, "sorted", real_sorted, raising=False)
+    assert r.status_code == 500 and written == ["user_1.json"]  # failed after the write
+    assert not (extras / "user_1.json").exists() and not (extras / "user_1").exists()
+    api._S.builds.clear()  # a reload from disk does not resurrect it
+    assert all(t["kind"] != "user" for t in c.get("/api/runs/2023-11-05/meta").json()["tags"])
 
 
 def api_frame_with_held_build(client, held):
