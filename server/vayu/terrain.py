@@ -5,6 +5,7 @@ tile pixels are NaN. Sea cells keep Terrarium's bathymetry (negative values).
 """
 import io
 import math
+import os
 
 import httpx
 import numpy as np
@@ -74,6 +75,20 @@ def grid_from_tiles(tiles: dict[tuple[int, int], bytes]) -> np.ndarray:
     return out.reshape(NY, NX).astype(np.float32)
 
 
+def _validated_tile(png: bytes, x: int, y: int) -> bytes:
+    """`png` unchanged if it decodes to a 256x256 image, else UpstreamError."""
+    try:
+        with Image.open(io.BytesIO(png)) as img:
+            img.load()
+            size = img.size
+            img.convert("RGB")
+    except Exception as exc:
+        raise UpstreamError("terrain", f"tile {ZOOM}/{x}/{y} is not a valid image: {exc}") from exc
+    if size != (TILE_PX, TILE_PX):
+        raise UpstreamError("terrain", f"tile {ZOOM}/{x}/{y} has size {size}, expected 256x256")
+    return png
+
+
 def _fetch_tile(client: httpx.Client, x: int, y: int) -> bytes:
     url = TILE_URL.format(z=ZOOM, x=x, y=y)
     try:
@@ -82,27 +97,46 @@ def _fetch_tile(client: httpx.Client, x: int, y: int) -> bytes:
         raise UpstreamError("terrain", f"tile {ZOOM}/{x}/{y} failed: {exc}") from exc
     if resp.status_code != 200:
         raise UpstreamError("terrain", f"tile {ZOOM}/{x}/{y} returned HTTP {resp.status_code}")
-    return resp.content
+    return _validated_tile(resp.content, x, y)
+
+
+def _load_grid(path) -> np.ndarray | None:
+    """The persisted grid, or None if missing, unreadable or incomplete."""
+    if not path.is_file():
+        return None
+    try:
+        grid = np.load(path, allow_pickle=False)
+    except Exception:  # noqa: BLE001 - any unreadable file means rebuild
+        return None
+    if grid.shape != (NY, NX) or grid.dtype != np.float32 or np.isnan(grid).any():
+        return None
+    return grid
 
 
 def elevation() -> np.ndarray:
-    """Terrain elevation (NY, NX) float32 metres; memoised in-process and cached on disk."""
+    """Terrain elevation (NY, NX) float32 metres, read-only; memoised and cached on disk."""
     global _memo
     if _memo is not None:
         return _memo
     path = config.data_dir() / "cache" / "terrain.npy"
-    if path.is_file():
-        _memo = np.load(path)
-        return _memo
-    with httpx.Client(timeout=60) as client:
-        tiles = {
-            (x, y): cached_bytes(
-                "terrain", f"terrarium/{ZOOM}/{x}/{y}", lambda x=x, y=y: _fetch_tile(client, x, y)
-            )
-            for x, y in tiles_needed()
-        }
-    grid = grid_from_tiles(tiles)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(path, grid)
+    grid = _load_grid(path)
+    if grid is None:
+        with httpx.Client(timeout=60) as client:
+            tiles = {
+                (x, y): cached_bytes(
+                    "terrain", f"terrarium/{ZOOM}/{x}/{y}",
+                    lambda x=x, y=y: _fetch_tile(client, x, y),
+                )
+                for x, y in tiles_needed()
+            }
+        grid = grid_from_tiles(tiles)
+        if np.isnan(grid).any():
+            raise UpstreamError("terrain", "tiles do not cover the whole model domain")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        with open(tmp, "wb") as f:
+            np.save(f, grid)
+        os.replace(tmp, path)
+    grid.setflags(write=False)
     _memo = grid
     return grid

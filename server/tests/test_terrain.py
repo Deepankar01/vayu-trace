@@ -47,6 +47,10 @@ def test_delhi_low(grid):
     assert 150 <= value_at(grid, 77.2, 28.6) <= 300
 
 
+def test_plains_south_of_himalayan_front(grid):
+    assert value_at(grid, 80.0, 27.0) < 400
+
+
 def test_himalaya_high(grid):
     assert value_at(grid, 79.0, 31.0) > 3000
 
@@ -86,3 +90,58 @@ def test_elevation_fetches_every_tile_once_then_serves_from_cache(tmp_path):
     terrain._memo = None
     np.testing.assert_array_equal(terrain.elevation(), first)  # from the .npy
     assert route.call_count == len(terrain.tiles_needed())
+
+
+def _mock_all_tiles():
+    png = (FIXTURES / "6_45_26.png").read_bytes()
+    return respx.get(url__regex=r".*/terrarium/6/.*").mock(
+        return_value=httpx.Response(200, content=png))
+
+
+def test_elevation_is_read_only():
+    with respx.mock:
+        _mock_all_tiles()
+        grid = terrain.elevation()
+    with pytest.raises(ValueError):
+        grid[0, 0] = 1.0
+
+
+@pytest.mark.parametrize("make_bad", [
+    lambda path: path.write_bytes(b"\x93NUMPY\x01\x00truncated"),
+    lambda path: np.save(path, np.zeros((5, 5), dtype=np.float32)),
+    lambda path: np.save(path, np.full((terrain.NY, terrain.NX), np.nan, dtype=np.float32)),
+])
+def test_bad_persisted_grid_is_rebuilt(tmp_path, make_bad):
+    path = tmp_path / "cache" / "terrain.npy"
+    path.parent.mkdir(parents=True)
+    with open(path, "wb"):
+        pass
+    make_bad(path)
+    with respx.mock:
+        route = _mock_all_tiles()
+        grid = terrain.elevation()
+    assert route.call_count == len(terrain.tiles_needed())
+    assert grid.shape == (terrain.NY, terrain.NX) and not np.isnan(grid).any()
+    assert np.load(path).shape == (terrain.NY, terrain.NX)
+
+
+@pytest.mark.parametrize("body", [b"<html>captive portal</html>", b"\x89PNG\r\n\x1a\ntruncated"])
+def test_garbage_tile_body_raises_and_is_not_cached(body):
+    with respx.mock:
+        route = respx.get(url__regex=r".*/terrarium/6/.*").mock(
+            return_value=httpx.Response(200, content=body))
+        for attempt in (1, 2):
+            with pytest.raises(UpstreamError) as err:
+                terrain.elevation()
+            assert err.value.service == "terrain"
+            assert route.call_count == attempt  # nothing cached, so the second call refetches
+
+
+def test_wrong_size_tile_rejected():
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(buf, format="PNG")
+    with respx.mock:
+        respx.get(url__regex=r".*/terrarium/6/.*").mock(
+            return_value=httpx.Response(200, content=buf.getvalue()))
+        with pytest.raises(UpstreamError):
+            terrain.elevation()
