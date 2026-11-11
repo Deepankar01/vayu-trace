@@ -1,2 +1,9 @@
 .env
 .superpowers/
+server/data/
+.venv/
+node_modules/
+__pycache__/
+web/dist/
+.pytest_cache/
+.ruff_cache/
