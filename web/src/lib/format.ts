@@ -88,10 +88,10 @@ export function compass16(deg: number | null): string {
 /**
  * Whole-percent labels for shares that make up one whole (0..1 each), summing to exactly 100.
  *
- * Rule (largest remainder): an entry with a positive share under 0.5 % shows "<1%" and counts as
- * 0; every other entry gets the floor of its percent, and the points still missing to reach 100
+ * Rule (largest remainder): an entry with a positive share under 0.5 % counts as 0; every other entry gets the floor of its percent, and the points still missing to reach 100
  * go one each to the entries with the largest fractional parts (ties go to the later entry, so a
- * trailing "Not explained by model" row keeps its conventionally rounded value). With any null
+ * trailing "Not explained by model" row keeps its conventionally rounded value). Any positive entry
+ * that ends at 0 (under 0.5 %, or 0.5–1 % without a remainder point) shows "<1%". With any null
  * share, or no positive share, each entry is formatted on its own with `fmtShare`.
  */
 export function fmtSharesToWhole(shares: readonly (number | null)[]): string[] {
@@ -105,5 +105,5 @@ export function fmtSharesToWhole(shares: readonly (number | null)[]): string[] {
     .filter((e) => e.r >= 0)
     .sort((a, b) => b.r - a.r || b.i - a.i);
   for (let k = 0; missing > 0 && order.length > 0; k = (k + 1) % order.length, missing--) base[order[k].i]++;
-  return base.map((b, i) => (tiny[i] ? "<1%" : `${b}%`));
+  return base.map((b, i) => (b === 0 && pct[i] > 0 ? "<1%" : `${b}%`));
 }

@@ -3,7 +3,7 @@
  * to the measured CPCB value, where the PM2.5 came from at the playhead hour, smoke travel time,
  * and model vs measured vs Copernicus over the window. Missing data is said, never drawn as 0.
  */
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useMapStatus } from "../map/mapStatus";
 import { aqiCategory, aqiColor } from "../lib/colors";
 import { arrival } from "../lib/breakdown";
@@ -62,7 +62,10 @@ export function CityPanel() {
   const err = fmtError(view.simMean, m.mean);
   const noneInWindow = measured.status === "ready" && noMeasuredInWindow(measured.values, measured.stationCount);
 
+  // Right column: just the measured AQI (or a short state message). The details go on a
+  // full-width line under both numbers, so long labels never squeeze the header.
   let measuredBody;
+  let measuredDetail: ReactNode = null;
   if (measured.status === "loading" || measured.status === "idle") {
     measuredBody = <div className="m-msg">fetching CPCB data…</div>;
   } else if (measured.status === "error") {
@@ -76,22 +79,21 @@ export function CityPanel() {
     measuredBody = <div className="m-msg">No CPCB data for these dates</div>;
   } else if (m.aqi === null && m.hourly !== null) {
     // a reading this hour, but too few in the last 24 h for the AQI
-    measuredBody = (
+    measuredBody = <div className="m-aqi num mute" data-testid="measured-aqi-missing">–</div>;
+    measuredDetail = (
       <>
-        <div className="m-aqi num mute" data-testid="measured-aqi-missing">–</div>
-        <div className="num">PM2.5 {fmtNumber(m.hourly)} µg/m³ this hour</div>
-        <div className="mute">24 h mean needs 16 h of data</div>
+        <span className="num">measured PM2.5 {fmtNumber(m.hourly)} µg/m³ this hour</span>
+        <span>24 h mean needs 16 h of data</span>
       </>
     );
   } else if (m.aqi === null) {
     measuredBody = <div className="m-msg">No CPCB data for this hour</div>;
   } else {
-    measuredBody = (
+    measuredBody = <div className="m-aqi num" data-testid="measured-aqi" style={{ color: aqiColor(m.aqi) }}>{Math.round(m.aqi)}</div>;
+    measuredDetail = (
       <>
-        <div className="m-aqi num" data-testid="measured-aqi" style={{ color: aqiColor(m.aqi) }}>{Math.round(m.aqi)}</div>
-        <div className="caption">PM2.5-based AQI (24 h)</div>
-        {err && <div className="num nowrap">model {err} <span className="mute">(24 h means)</span></div>}
-        <div className="mute">{measured.stationCount === 1 ? "1 station" : `${measured.stationCount} stations`}</div>
+        {err && <span className="num">model {err} <span className="mute">(24 h means)</span></span>}
+        <span className="num">{measured.stationCount === 1 ? "1 station" : `${measured.stationCount} stations`}</span>
       </>
     );
   }
@@ -116,7 +118,7 @@ export function CityPanel() {
       </div>
 
       <div className="aqi-row">
-        <div>
+        <div className="sim-col">
           <div className={simAqi === null ? "big num mute" : "big num"} data-testid="sim-aqi">
             {simAqi === null ? DASH : simAqi}
           </div>
@@ -127,13 +129,16 @@ export function CityPanel() {
               {aqiCategory(simAqi)} · PM2.5 {fmtNumber(view.simHourly)} µg/m³
             </div>
           )}
-          <div className="caption">PM2.5-based AQI (24 h)</div>
         </div>
         <div className="measured" aria-label="Measured">
           <div className="mute">measured (CPCB)</div>
           {measuredBody}
         </div>
       </div>
+      <p className="aqi-detail" data-testid="aqi-detail">
+        <span>PM2.5-based AQI (24 h)</span>
+        {measuredDetail}
+      </p>
       <p className="explain">{MODEL_SCOPE_NOTE}</p>
 
       <div className="sep" />

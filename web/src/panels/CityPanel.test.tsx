@@ -64,7 +64,7 @@ describe("CityPanel", () => {
     // test meta starts 2026-11-10 00:00 UTC; hour 20 = 01:30 IST
     expect(screen.getByTestId("breakdown-title")).toHaveTextContent("Where it came from · 01:30 IST (this hour)");
     expect(screen.getByText("This hour: model 100 vs measured 160 µg/m³")).toBeInTheDocument();
-    expect(screen.getAllByText("PM2.5-based AQI (24 h)")).toHaveLength(2);
+    expect(screen.getByTestId("aqi-detail")).toHaveTextContent("PM2.5-based AQI (24 h)model −38% (24 h means)4 stations");
     expect(screen.getByText(/hourly PM2\.5, µg\/m³/)).toBeInTheDocument();
   });
 
@@ -98,7 +98,7 @@ describe("CityPanel", () => {
     const values: (number | null)[] = flat(N, null);
     values[H] = 93;
     setup(sim100, values);
-    expect(screen.getByText("PM2.5 93 µg/m³ this hour")).toBeInTheDocument();
+    expect(screen.getByText("measured PM2.5 93 µg/m³ this hour")).toBeInTheDocument();
     expect(screen.getByText("24 h mean needs 16 h of data")).toBeInTheDocument();
     expect(screen.queryByTestId("measured-aqi")).toBeNull();
     expect(screen.queryByText(/^model /)).toBeNull();

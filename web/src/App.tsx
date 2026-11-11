@@ -36,6 +36,7 @@ export default function App() {
   const frameError = useStore((s) => s.frameError);
   const firesError = useStore((s) => s.firesError);
   const ready = useStore((s) => s.status === "ready");
+  const build = useStore((s) => s.meta?.build_id ?? s.runId);
   // an added-source failure whose dialog is gone (or a failed removal) still has to be seen
   const sourceError = useStore((s) => s.sourceError);
   const dialogOpen = useDropStore((d) => d.pending !== null);
@@ -86,7 +87,7 @@ export default function App() {
       <MapContainer onDropPoint={onDropPoint} onProblem={onProblem} />
       <div className="app-ui">
         {/* Validation report (Task 16): their component, placed at the right end of the top bar */}
-        <PanelBoundary name="Top bar"><TopBar date={requested} onDate={startRun} actions={<ValidationButton />} /></PanelBoundary>
+        <PanelBoundary name="Top bar" resetKey={build}><TopBar date={requested} onDate={startRun} actions={<ValidationButton />} /></PanelBoundary>
         {ready && (
           <>
             <button type="button" className="panel left-toggle" aria-label={leftOpen ? "Hide sources" : "Show sources"}
@@ -96,12 +97,12 @@ export default function App() {
               </svg>
             </button>
             <aside className={`panel side left${leftOpen ? " open" : ""}`} aria-label="Sources">
-              <div className="side-scroll"><PanelBoundary name="Sources panel"><SourcesPanel /></PanelBoundary></div>
+              <div className="side-scroll"><PanelBoundary name="Sources panel" resetKey={build}><SourcesPanel /></PanelBoundary></div>
             </aside>
             <aside className="panel side right" aria-label="Selected city">
-              <div className="side-scroll"><PanelBoundary name="City panel"><CityPanel /></PanelBoundary></div>
+              <div className="side-scroll"><PanelBoundary name="City panel" resetKey={build}><CityPanel /></PanelBoundary></div>
             </aside>
-            <PanelBoundary name="Legend"><PlumeLegend /></PanelBoundary>
+            <PanelBoundary name="Legend" resetKey={build}><PlumeLegend /></PanelBoundary>
           </>
         )}
         {shownProblems.length > 0 && (
@@ -109,9 +110,10 @@ export default function App() {
             {shownProblems.map((m, i) => <div key={i}>{m}</div>)}
           </div>
         )}
-        <PanelBoundary name="Timeline"><Timeline /></PanelBoundary>
+        <PanelBoundary name="Timeline" resetKey={build}><Timeline /></PanelBoundary>
         <RunStatus onRetry={() => startRun(useStore.getState().meta?.date ?? requested)} />
-        <PanelBoundary name="Drop source dialog"><DropSourceDialog /></PanelBoundary>
+        <PanelBoundary name="Drop source dialog" resetKey={build}
+          onError={() => useDropStore.setState({ pending: null, busy: false, armedForDrop: false })}><DropSourceDialog /></PanelBoundary>
       </div>
     </>
   );

@@ -103,6 +103,10 @@ describe("fmtSharesToWhole", () => {
     const out = fmtSharesToWhole([0.996, 0.004]);
     expect(out).toEqual(["100%", "<1%"]);
   });
+  it("a positive share left at 0 by the allocation shows <1%, never 0%", () => {
+    // 49.75 + 49.75 + 0.5: the two remainder points go to the 0.75s, the 0.5 % entry stays at 0
+    expect(fmtSharesToWhole([0.4975, 0.4975, 0.005])).toEqual(["50%", "50%", "<1%"]);
+  });
   it("falls back to per-entry formatting with nulls or nothing positive", () => {
     expect(fmtSharesToWhole([null, 0.5])).toEqual(["–", "50%"]);
     expect(fmtSharesToWhole([0, 0])).toEqual(["0%", "0%"]);
