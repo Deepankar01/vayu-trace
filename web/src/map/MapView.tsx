@@ -1,4 +1,5 @@
 import type { Layer } from "@deck.gl/core";
+import type { Device } from "@luma.gl/core";
 import { MapboxOverlay } from "@deck.gl/mapbox";
 import * as maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -47,6 +48,9 @@ export interface MapViewProps {
   onMapReady?: (map: maplibregl.Map, info: MapReadyInfo) => void;
   /** Style fetch failures, setup exceptions and map runtime errors, as a message. */
   onError?: (message: string) => void;
+  /** The GPU device deck.gl draws with (shared with MapLibre), once it exists: lets layers own
+   *  textures that they update in place instead of re-creating them per frame. */
+  onDevice?: (device: Device) => void;
 }
 
 const demSource = (): maplibregl.RasterDEMSourceSpecification => ({
@@ -117,14 +121,14 @@ function setupMap(map: maplibregl.Map, terrain: boolean): MapReadyInfo {
   return { labelsBelowId };
 }
 
-export function MapView({ layers = [], terrain = true, onMapReady, onError }: MapViewProps) {
+export function MapView({ layers = [], terrain = true, onMapReady, onError, onDevice }: MapViewProps) {
   const container = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const overlayRef = useRef<MapboxOverlay | null>(null);
   const readyRef = useRef(false);
   // Latest props, readable from the one-time load handler.
-  const latest = useRef({ layers, terrain, onMapReady, onError });
-  latest.current = { layers, terrain, onMapReady, onError };
+  const latest = useRef({ layers, terrain, onMapReady, onError, onDevice });
+  latest.current = { layers, terrain, onMapReady, onError, onDevice };
 
   useEffect(() => {
     const map = new maplibregl.Map({
@@ -138,7 +142,11 @@ export function MapView({ layers = [], terrain = true, onMapReady, onError }: Ma
     });
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
 
-    const overlay = new MapboxOverlay({ interleaved: true, layers: latest.current.layers });
+    const overlay = new MapboxOverlay({
+      interleaved: true,
+      layers: latest.current.layers,
+      onDeviceInitialized: (device: Device) => latest.current.onDevice?.(device),
+    });
     map.addControl(overlay as unknown as maplibregl.IControl);
     mapRef.current = map;
     overlayRef.current = overlay;

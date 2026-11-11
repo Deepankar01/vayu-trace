@@ -4,7 +4,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react()],
-  build: { chunkSizeWarningLimit: 2000 }, // maplibre + deck.gl are inherently large
+  build: { chunkSizeWarningLimit: 2500 }, // maplibre + deck.gl (+ extensions) are inherently large
   server: {
     port: 5173,
     strictPort: true,

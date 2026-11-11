@@ -1,0 +1,9 @@
+.vayu-map {
+  position: absolute;
+  inset: 0;
+}
+
+/* Drop-source armed: crosshair, over deck.gl's own hover cursor */
+.vayu-map.armed .maplibregl-canvas {
+  cursor: crosshair !important;
+}
