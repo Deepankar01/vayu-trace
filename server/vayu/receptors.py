@@ -34,6 +34,20 @@ _FIRE_STATE_NAMES = {
 assert set(_REGION_NAMES) == set(REGIONS) and set(_FIRE_STATE_NAMES) == set(FIRE_STATES)
 
 _FIRE_KINDS = ("fire", "firefc")
+CALM_MS = 0.1  # below this wind speed the direction is undefined (NaN)
+
+
+def _lookup(tag_id: str):
+    """The catalogue Tag for `tag_id`, or None for a user-added tag (id starting `user_`).
+    Anything else is an error: the stored run does not match the current catalogue."""
+    if tag_id.startswith("user_"):
+        return None
+    try:
+        return _TAG_BY_ID[tag_id]
+    except KeyError:
+        raise ValueError(
+            f"unknown source tag {tag_id!r}; the stored run predates the current tag catalogue"
+        ) from None
 
 
 # --- city series ---
@@ -60,8 +74,10 @@ def city_region(city: City) -> str:
 
 def wind_dir_from_deg(u, v):
     """Meteorological wind direction (degrees the wind blows FROM, 0..360) from u (east) and
-    v (north). u > 0, v = 0 (blowing toward the east) is from 270."""
-    return np.mod(270.0 - np.degrees(np.arctan2(v, u)), 360.0)
+    v (north). u > 0, v = 0 (blowing toward the east) is from 270. Calm air (speed below
+    CALM_MS) has no direction: NaN."""
+    d = np.mod(270.0 - np.degrees(np.arctan2(v, u)), 360.0)
+    return np.where(np.hypot(u, v) < CALM_MS, np.nan, d)
 
 
 def _blocks(cities) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -90,12 +106,15 @@ def city_series(run, met: MetField, met_offset_h: float) -> dict[str, CitySeries
     roughly a 30 km square, not a point. `fire_age_h` is the mean over the same block weighted by
     the fire concentration (all fire and firefc tags) in each cell; NaN if there is no fire in the
     block. `met_offset_h` is hours from the met field's start to the run's `start`.
+    Wind direction is NaN in calm air (speed below 0.1 m/s). A tag that is neither in the
+    catalogue nor `user_*` raises ValueError.
 
     Each frame is read once.
     """
     flat, ok = _blocks(CITIES)
     n, hours = len(CITIES), run.hours
-    fire_tags = [t for t in run.tags if _TAG_BY_ID[t].kind in _FIRE_KINDS]
+    fire_tags = [t for t in run.tags
+                 if (tag := _lookup(t)) is not None and tag.kind in _FIRE_KINDS]
     by_tag = {t: np.full((n, hours), np.nan) for t in run.tags}
     age = np.full((n, hours), np.nan)
     for h in range(hours):
@@ -159,18 +178,31 @@ def breakdown(
     source"). Shares are of max(measured, simulated total) when `measured` is finite, else of the
     simulated total; all None if that is 0. A "Not explained by model" row is added only when
     `measured` is finite and exceeds the simulated total. `minor` means share < 5%. Rows of value
-    exactly 0 are omitted. Order: fire, local, transported, user (each by value descending), then
-    unexplained. Nothing is rounded.
+    exactly 0 are omitted. Order: fire, local, transported, user (each by value descending, ties
+    by `key` in plain code-unit/ASCII comparison, not locale), then unexplained. Nothing is
+    rounded. A `weights` entry for a tag absent from `by_tag_now` is ignored. A tag that is neither
+    in the catalogue nor `user_*` raises ValueError.
+
+    The "unexplained" row is not model output; the simulated total is the sum of `value` over
+    rows with kind != "unexplained".
+
+    Contract for the TypeScript port: results must agree within 1e-9 relative. To make that
+    robust, every sum here iterates tags in SORTED tag-id order with an explicit left-to-right
+    `+=` loop (no `sum()`, no `fsum`), so the port must do the same.
     """
     labels = labels or {}
     eff: dict[str, float] = {}
-    for tag_id, v in by_tag_now.items():
+    for tag_id in sorted(by_tag_now):
+        _lookup(tag_id)
+        v = by_tag_now[tag_id]
         if v is None or not np.isfinite(v):
             continue
         eff[tag_id] = float(v) * float(weights.get(tag_id, 1.0))
     if not eff:
         return []
-    total = sum(eff.values())
+    total = 0.0
+    for v in eff.values():
+        total += v
     have_measured = measured is not None and np.isfinite(measured)
     denom = max(float(measured), total) if have_measured else total
 
@@ -181,12 +213,12 @@ def breakdown(
 
     groups: dict[str, dict[str, BreakdownRow]] = {k: {} for k in ("fire", "local", "transported", "user")}
     fire_sum: dict[str, float] = {}
-    for tag_id, v in eff.items():
+    for tag_id, v in eff.items():  # sorted tag-id order
         if tag_id.startswith("user_"):
             groups["user"][tag_id] = row(f"user:{tag_id}", labels.get(tag_id, DEFAULT_USER_LABEL),
                                          "user", None, v, USER_COLOR)
             continue
-        tag = _TAG_BY_ID[tag_id]
+        tag = _lookup(tag_id)
         if tag.kind in _FIRE_KINDS:
             fire_sum[tag.region] = fire_sum.get(tag.region, 0.0) + v
         elif tag.region == city_region:
@@ -225,11 +257,14 @@ class ArrivalLabel(TypedDict, total=False):
 def arrival(fire_series: np.ndarray, hour: int, age_h: float | None = None) -> ArrivalLabel:
     """Smoke status at `hour` from the city's total fire contribution per hour (after weights).
 
-    "present" (with the caller's `age_h`) if the value at `hour` is at or above FIRE_ARRIVAL_UGM3;
+    "present" (with the caller's `age_h`, None if NaN) if the value at `hour` is at or above FIRE_ARRIVAL_UGM3;
     "arrives" with `in_h` hours to the first later hour at or above it; else "none". NaN counts as
-    below the threshold.
+    below the threshold; earlier hours are ignored. `hour` outside the series raises IndexError.
     """
     s = np.asarray(fire_series, dtype=float)
+    if not 0 <= hour < len(s):
+        raise IndexError(f"hour {hour} outside 0..{len(s) - 1}")
+    age_h = None if age_h is None or not np.isfinite(age_h) else float(age_h)
     hit = np.where(np.isfinite(s), s, -np.inf) >= FIRE_ARRIVAL_UGM3
     if hit[hour]:
         return {"kind": "present", "age_h": age_h}
@@ -249,6 +284,17 @@ def _terrain(elev: np.ndarray, lon: float, lat: float) -> tuple[float, bool]:
     return max(float(elev[int(iy), int(ix)]), 0.0), True
 
 
+def _passable(elev, lon, lat, ceiling) -> bool:
+    h, ok = _terrain(elev, lon, lat)
+    return (not ok) or h <= ceiling  # outside the domain counts as passable (then we stop)
+
+
+def _allowed(elev, lon, lat, dlon, dlat, ceiling) -> bool:
+    """A move is allowed if both its destination and its midpoint are passable."""
+    return (_passable(elev, lon + dlon, lat + dlat, ceiling)
+            and _passable(elev, lon + 0.5 * dlon, lat + 0.5 * dlat, ceiling))
+
+
 def back_trajectory(
     met: MetField, elev: np.ndarray, lon: float, lat: float, hour: int,
     hours_back: int = 72, met_offset_h: float = 0.0,
@@ -256,12 +302,14 @@ def back_trajectory(
     """Where the air at (lon, lat) in the middle of output hour `hour` came from.
 
     Integrates backward with the mean wind only (no turbulence), time step DT_S, sampling met at
-    the parcel's current position and time, moving by -u dt, -v dt. A backward move is refused if
-    the terrain at its midpoint or destination exceeds the terrain here plus the mixing height (the
-    transport rule at altitude terrain + blh/2, without height relaxation, including its
-    no-corner-cutting condition); then x-only, then y-only is tried, else the parcel stays. Stops
-    early if the parcel leaves the domain, met is NaN or the met time range is exhausted.
-    Returns one (lon, lat) per hour, most recent first, starting with the city itself.
+    the parcel's current position and time (`met_offset_h + hour + 0.5` hours since the met start,
+    going backward), moving by -u dt, -v dt. A backward move is refused if the terrain at its
+    midpoint or destination exceeds the terrain here plus the mixing height (the transport rule,
+    whose ceiling is parcel altitude + blh/2 with altitude = terrain + blh/2, without height
+    relaxation; it includes the no-corner-cutting condition); then x-only, then y-only is tried,
+    else the parcel stays. Stops early if the parcel leaves the domain, met is NaN or the met time
+    range is exhausted; an `hour` whose time already lies outside the met range returns just
+    `[(lon, lat)]`. Returns one (lon, lat) per hour, most recent first, starting with the city.
     """
     deg = 180.0 / np.pi
     points = [(float(lon), float(lat))]
@@ -277,19 +325,10 @@ def back_trajectory(
             break
         dlat = -v * DT_S / EARTH_RADIUS_M * deg
         dlon = -u * DT_S / (EARTH_RADIUS_M * np.cos(np.radians(lat))) * deg
-        h_here, _ = _terrain(elev, lon, lat)
-        ceiling = h_here + blh
-
-        def passable(lo, la):
-            h, ok = _terrain(elev, lo, la)
-            return (not ok) or h <= ceiling
-
-        def allowed(dx, dy):
-            return (passable(lon + dx, lat + dy)
-                    and passable(lon + 0.5 * dx, lat + 0.5 * dy))
-
-        ok_x, ok_y = allowed(dlon, 0.0), allowed(0.0, dlat)
-        if allowed(dlon, dlat) and (ok_x or ok_y):
+        ceiling = _terrain(elev, lon, lat)[0] + blh
+        ok_x = _allowed(elev, lon, lat, dlon, 0.0, ceiling)
+        ok_y = _allowed(elev, lon, lat, 0.0, dlat, ceiling)
+        if _allowed(elev, lon, lat, dlon, dlat, ceiling) and (ok_x or ok_y):
             lon, lat = lon + dlon, lat + dlat
         elif ok_x:
             lon = lon + dlon

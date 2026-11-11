@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from vayu import receptors
-from vayu.cities import BY_ID, CITIES
+from vayu.cities import BY_ID, CITIES, City
 from vayu.constants import FIRE_ARRIVAL_UGM3
 from vayu.domain import NX, NY, TAGS, cell_index
 from vayu.met import MetField, MetRaw
@@ -21,6 +21,20 @@ def make_met(hours=100, speed=0.0, direction=270.0, blh=500.0):
     return MetField(MetRaw(START, hours, LON, LAT, {
         "wind_speed_10m": f(speed), "wind_direction_10m": f(direction),
         "wind_speed_100m": f(speed), "wind_direction_100m": f(direction),
+        "temperature_2m": f(20.0), "relative_humidity_2m": f(50.0),
+        "precipitation": f(0.0), "boundary_layer_height": f(blh),
+    }))
+
+
+def make_met_series(speeds, direction=270.0, blh=500.0):
+    """Met whose wind speed at hour index i is speeds[i] everywhere."""
+    hours = len(speeds)
+    shape = (hours, 33, 33)
+    f = lambda x: np.full(shape, x, dtype=np.float32)  # noqa: E731
+    sp = np.broadcast_to(np.asarray(speeds, dtype=np.float32)[:, None, None], shape).copy()
+    return MetField(MetRaw(START, hours, LON, LAT, {
+        "wind_speed_10m": sp, "wind_direction_10m": f(direction),
+        "wind_speed_100m": sp, "wind_direction_100m": f(direction),
         "temperature_2m": f(20.0), "relative_humidity_2m": f(50.0),
         "precipitation": f(0.0), "boundary_layer_height": f(blh),
     }))
@@ -200,7 +214,7 @@ class FakeRun:
         return self.age.copy()
 
 
-def test_3x3_mean_ignores_nan_and_outside_cells():
+def test_3x3_mean_ignores_nan_cells():
     c = BY_ID["delhi"]
     ix, iy = (int(a) for a in cell_index(c.lon, c.lat))
     run = FakeRun(hours=1)
@@ -309,3 +323,90 @@ def test_back_trajectory_slides_along_wall():
     pts = back_trajectory(make_met(speed=5.0, direction=225.0), elev, 80.0, 25.0, hour=20,
                           hours_back=6)
     assert pts[-1][0] > 79.0 and pts[-1][1] < 25.0  # blocked in x, free to move south
+
+
+# --- review fixes ---
+
+def test_breakdown_sum_is_sorted_left_to_right_and_order_independent():
+    vals = {"vehicles_punjab": 0.1, "dust_delhi_ncr": 0.2, "vehicles_delhi_ncr": 0.3,
+            "fire_punjab": 0.7, "firefc_punjab": 0.1, "user_1": 0.6}
+    expected = 0.0
+    for t in sorted(vals):
+        expected += vals[t]
+    rows = breakdown(vals, {}, "delhi_ncr", 10.0)
+    assert rows[-1].key == "unexplained" and rows[-1].value == 10.0 - expected
+    shuffled = dict(reversed(list(vals.items())))
+    assert breakdown(shuffled, {}, "delhi_ncr", 10.0) == rows
+    assert breakdown(shuffled, {}, "delhi_ncr", None) == breakdown(vals, {}, "delhi_ncr", None)
+
+
+def test_breakdown_unknown_tag_and_extra_weights():
+    with pytest.raises(ValueError, match="unknown source tag 'bogus_tag'.*predates"):
+        breakdown({"bogus_tag": 1.0}, {}, "delhi_ncr", None)
+    rows = breakdown({"vehicles_delhi_ncr": 2.0}, {"dust_punjab": 9.0}, "delhi_ncr", None)
+    assert [r.value for r in rows] == [2.0]
+
+
+def test_city_series_user_tag_ok_and_unknown_tag_raises():
+    run = FakeRun(hours=1, tags=("vehicles_delhi_ncr", "user_1"))
+    assert "user_1" in city_series(run, make_met(), 0.0)["delhi"].by_tag
+    run = FakeRun(hours=1, tags=("vehicles_delhi_ncr", "old_tag"))
+    with pytest.raises(ValueError, match="unknown source tag 'old_tag'"):
+        city_series(run, make_met(), 0.0)
+
+
+def test_calm_wind_has_nan_direction():
+    out = city_series(FakeRun(hours=2), make_met(speed=0.0), 0.0)["delhi"].met
+    assert np.isnan(out["wind_dir_deg"]).all() and (out["wind_ms"] == 0).all()
+    assert np.isnan(receptors.wind_dir_from_deg(0.05, 0.0))
+    assert receptors.wind_dir_from_deg(0.2, 0.0) == pytest.approx(270.0)
+
+
+def test_arrival_nan_age_none_and_hour_range_and_earlier_crossing():
+    s = np.zeros(10)
+    s[5] = 30.0
+    assert arrival(s, 5, float("nan")) == {"kind": "present", "age_h": None}
+    for bad in (-1, 10, 11):
+        with pytest.raises(IndexError, match="outside 0..9"):
+            arrival(s, bad, None)
+    s = np.zeros(10)
+    s[2] = 40.0
+    assert arrival(s, 5, None) == {"kind": "none"}
+
+
+def test_city_series_met_samples_ramping_wind_with_offset():
+    speeds = np.arange(100) * 0.5  # linear in time: wind(t) = 0.5 * t
+    out = city_series(FakeRun(hours=3), make_met_series(speeds), 3.0)["delhi"].met
+    assert out["wind_ms"] == pytest.approx([0.5 * 3.5, 0.5 * 4.5, 0.5 * 5.5])
+    assert out["wind_dir_deg"] == pytest.approx([270.0] * 3)
+
+
+@pytest.mark.parametrize("corner", [(0, 0), (NX - 1, NY - 1)])
+def test_block_edge_has_four_cells(corner):
+    ix, iy = corner
+    city = City("edge", 6.0 + 0.1 * (iy + 0.5), 66.0 + 0.1 * (ix + 0.5))
+    flat, ok = receptors._blocks([city])
+    assert ok.sum() == 4
+    cells = {(int(f) % NX, int(f) // NX) for f in flat[0][ok[0]]}
+    sx = (0, 1) if ix == 0 else (NX - 2, NX - 1)
+    sy = (0, 1) if iy == 0 else (NY - 2, NY - 1)
+    assert cells == {(x, y) for x in sx for y in sy}
+
+
+def test_back_trajectory_time_varying_wind_and_offset():
+    # wind 5 m/s up to met hour 55, falling linearly to 0 at hour 56 and 0 after
+    speeds = np.where(np.arange(100) <= 55, 5.0, 0.0)
+    met = make_met_series(speeds)
+    # city time = 48.5 + 7 + 0.5 = 56.0 in met hours; going backward the wind rises
+    pts = back_trajectory(met, np.zeros((NY, NX)), 80.0, 25.0, hour=7, hours_back=10,
+                          met_offset_h=48.5)
+    steps = np.arange(60)  # 6 steps/hour * 10 h
+    t = 56.0 - steps / 6.0
+    metres = (5.0 * np.clip(56.0 - t, 0, 1) * 600.0).sum()
+    expected_lon = 80.0 - np.degrees(metres / (6371008.8 * np.cos(np.radians(25.0))))
+    assert pts[-1][0] == pytest.approx(expected_lon, abs=1e-6) and pts[-1][1] == pytest.approx(25.0)
+    # dropping the offset would sample constant 5 m/s: a clearly different end point
+    assert abs(pts[-1][0] - (80.0 - np.degrees(5.0 * 36000 / (6371008.8 * np.cos(np.radians(25.0)))))) > 0.1
+    # hour outside the met range: just the city
+    assert back_trajectory(met, np.zeros((NY, NX)), 80.0, 25.0, hour=60, hours_back=5,
+                           met_offset_h=48.5) == [(80.0, 25.0)]
