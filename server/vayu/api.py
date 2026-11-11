@@ -96,16 +96,23 @@ def _now() -> datetime:
 
 # --- secrets and JSON ---
 
+_secret_values: list[str] | None = None
+
+
 def _secrets() -> list[str]:
-    out = []
-    for getter in (config.firms_map_key, config.openaq_api_key, config.data_gov_in_api_key):
-        try:
-            value = getter()
-        except RuntimeError:
-            continue
-        if value:
-            out.append(value)
-    return out
+    """The configured API keys, read once per process (a server restart picks up changes)."""
+    global _secret_values
+    if _secret_values is None:
+        out = []
+        for getter in (config.firms_map_key, config.openaq_api_key, config.data_gov_in_api_key):
+            try:
+                value = getter()
+            except RuntimeError:
+                continue
+            if value:
+                out.append(value)
+        _secret_values = out
+    return _secret_values
 
 
 def _scrub(text: str) -> str:

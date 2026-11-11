@@ -830,6 +830,20 @@ def test_validation_stale_flag_compares_constants_hash(env, tmp_path):
     assert json.loads(path.read_text()) == {"constants_sha256": "0" * 64}  # file not rewritten
 
 
+def test_secrets_are_read_once_per_process(env, monkeypatch):
+    monkeypatch.setattr(api, "_secret_values", None)
+    calls = []
+    real = config._get
+
+    def counting(name):
+        calls.append(name)
+        return real(name)
+
+    monkeypatch.setattr(config, "_get", counting)
+    first = api._secrets()
+    assert api._secrets() == first and len(calls) == 3
+
+
 KEYS = {"FIRMS_MAP_KEY": "fk-PLANTED-1a2b3c", "OPENAQ_API_KEY": "oq-PLANTED-4d5e6f",
         "DATA_GOV_IN_API_KEY": "dg-PLANTED-7a8b9c"}
 
@@ -837,6 +851,7 @@ KEYS = {"FIRMS_MAP_KEY": "fk-PLANTED-1a2b3c", "OPENAQ_API_KEY": "oq-PLANTED-4d5e
 def test_no_key_in_any_response(env, monkeypatch, caplog):
     for name, value in KEYS.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setattr(api, "_secret_values", None)  # read once per process: forget it here
     leak = " ".join(KEYS.values())
 
     def raises(*a, **kw):
