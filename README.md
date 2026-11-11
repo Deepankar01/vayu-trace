@@ -14,7 +14,7 @@ Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12 is installed by uv),
    - `DATA_GOV_IN_API_KEY`: data.gov.in key (live CPCB feed)
 2. `make setup`: installs the Python and web dependencies and downloads the EDGAR emission inventory (nine zip files of a few MB each) if it is not there yet.
 3. `make dev`: starts the API (port 8000) and the web app (port 5173) together and prints the address. Ctrl-C stops both. Other ports: `make dev API_PORT=8010 WEB_PORT=5183`.
-4. Open http://localhost:5173. The first run of a date takes about a minute (weather download and simulation, with a progress bar); after that the run is cached on disk and opens at once. Pick another date with `?date=YYYY-MM-DD` or the date field.
+4. Open http://localhost:5173. The first run of a date takes one to a few minutes (about a minute when the upstream data is already cached; weather download and simulation, with a progress bar); after that the run is cached on disk and opens at once. Pick another date with `?date=YYYY-MM-DD` or the date field.
 
 Other targets: `make test` (server and web test suites), `make validate` (the validation report below), `make build` (production build of the web app into `web/dist/`).
 
@@ -59,26 +59,34 @@ Every physical constant is in `server/vayu/constants.py` with a comment citing i
 - **Fire under-detection.** Satellites miss small and short-lived fires and fires under cloud or smoke; the fire scaling slider (default 1, no correction) is there for this.
 - **Night fires** seen only at night are taken at their observed fire radiative power without scaling up to a daytime peak, so they are under-counted by design.
 - **Emission timing.** Inventory emissions are annual means: no daily, weekly or seasonal profile (for example winter heating).
-- **Sampling uncertainty.** Values come from a finite number of particles. Hourly source shares carry about ±5 percentage points at Delhi and ±10–15 at other cities; shares within that margin are not ordered, and 3–6 hour or daily means are more reliable than single hours.
+- **Sampling uncertainty.** Values come from a finite number of particles. Hourly source shares carry about ±5 percentage points at Delhi and ±10–15 at Lucknow and Mumbai (other cities were not measured and are likely similar or worse); shares within that margin are not ordered, and 3–6 hour or daily means are more reliable than single hours.
 - **Measurement alignment.** CPCB hours are half-hour-offset averages aligned to UTC hours by overlap weighting; any hour needing a missing period is missing.
 - **Forecast fires.** The forecast assumes fires persist at the mean of the last three complete days.
 
 ## Validation
 
-`make validate` compares the model with CPCB measurements at the 28 northern cities (Delhi to Muzaffarpur) for 2025-11-03 to 2025-11-09, hourly, at default weights, and writes `docs/validation/2025-11.md` and the data behind the in-app Validation dialog. Headline pooled numbers (hours where both exist):
+`make validate` compares the model with CPCB measurements at the 28 northern cities (Delhi to Muzaffarpur) for 2025-11-03 to 2025-11-09, hourly, at default weights, and writes `docs/validation/2025-11.md` and the data behind the in-app Validation dialog. CAMS is compared over the same hours as the model. Headline numbers:
 
-| | n | r | NMB | FAC2 | CAMS r | CAMS NMB | CAMS FAC2 |
-|---|---|---|---|---|---|---|---|
-| All 28 cities | 4094 | 0.24 | -0.62 | 0.30 | 0.20 | -0.29 | 0.72 |
-| Delhi NCR (5 cities) | 745 | 0.02 | -0.50 | 0.38 | 0.12 | -0.52 | 0.57 |
+| | n | NMB | FAC2 | pooled r | median per-city r |
+|---|---|---|---|---|---|
+| All 28 cities, model | 4094 | -0.62 | 0.30 | 0.24 | 0.18 |
+| All 28 cities, CAMS | 4094 | -0.29 | 0.72 | 0.20 | 0.38 |
+| Delhi NCR (5 cities), model | 745 | -0.50 | 0.38 | 0.02 | 0.06 |
+| Delhi NCR (5 cities), CAMS | 745 | -0.52 | 0.57 | 0.12 | 0.29 |
 
-The model reads low in 27 of 28 cities (mean 34 against 90 µg/m³ measured, pooled), both by day and at night, and explains little of the hour-to-hour variation. No parameter was fitted to these measurements. The full table, method and reading are in [docs/validation/2025-11.md](docs/validation/2025-11.md).
+- The model reads low: pooled NMB -0.62 (mean 34 against 90 µg/m³ measured), lower than measured in 27 of 28 cities, by day and at night.
+- About 30 % of the model's hours are within a factor of two of the measurement, against 72 % for CAMS.
+- Hour-to-hour agreement with measurements is weak for both: the median per-city r is 0.18 for the model and 0.38 for CAMS.
+- CAMS is closer in level (pooled NMB -0.29). In Delhi NCR both read low by about half.
+- Pooled r is a correlation across all city-hours and includes differences between cities. The pooled r difference between model and CAMS is not a meaningful ranking; the model's r exceeds CAMS's in 4 of 28 cities.
+
+No parameter was fitted to these measurements. The full tables, method and reading are in [docs/validation/2025-11.md](docs/validation/2025-11.md).
 
 ## Known limitations of the app
 
 - **Measured-data gap.** CPCB PM2.5 in OpenAQ has a gap from about October 2022 to 2025-02-18; dates in between show "No CPCB data for these dates" (the simulation itself still runs). This is why the validation episode is November 2025, not November 2023.
 - **Live feed unverified.** The data.gov.in live CPCB feed could not be checked against real replies because the service was down during development; the hourly comparison uses OpenAQ.
-- **First-run time.** A new date takes about a minute; the free Open-Meteo archive may answer "too many requests" for a cold date, in which case retrying a minute later completes from the partly filled cache.
+- **First-run time.** A new date takes one to a few minutes (about a minute when upstream data is already cached); the free Open-Meteo archive may answer "too many requests" for a cold date, in which case retrying a minute later completes from the partly filled cache.
 - **Storage.** Runs and downloaded data are cached under `server/data/` (git-ignored). Delete it to start clean; the inventory is downloaded again by `make setup`.
 
 ## Project layout
