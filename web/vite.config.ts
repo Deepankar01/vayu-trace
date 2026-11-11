@@ -8,7 +8,8 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
-    proxy: { "/api": "http://localhost:8000" },
+    // `make dev API_PORT=...` sets VAYU_API_PORT so the proxy follows the API
+    proxy: { "/api": `http://localhost:${process.env.VAYU_API_PORT ?? "8000"}` },
   },
   test: {
     environment: "jsdom",
