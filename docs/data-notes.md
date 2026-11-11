@@ -166,3 +166,98 @@ Window mean 147.3 µg/m³; top contributors over the window: industry_delhi_ncr 
 
 ### History
 Version 1 (first commit of this task) used whole-hour snapshots and no kernel. With 200 parcels for every tag the simulation stage took 128 s (cold wall 158.6 s; `MetField.sample` 82 s of it), so the default was lowered to 100 (warm wall 68.7 s, peak 215,047 parcels). That run's sampling noise (table above, "before") led to the current configuration.
+
+## Measured data coverage
+
+Measured PM2.5 comes from OpenAQ v3, provider `CPCB` only (`server/vayu/clients/openaq.py`), checked against the live API on 2026-11-11.
+
+- **Gap.** CPCB-provider PM2.5 in OpenAQ for Delhi is available to about October 2022 and again from 2025-02-18. Dates in between return no measurements; the UI shows them as missing (never filled or interpolated).
+- **`caaqm` is not used.** Its Delhi sensors also end by 2022-10-31, so it does not fill the November 2022 to February 2025 gap and would duplicate sites already in the CPCB provider.
+- **Validation episode.** Because of the gap the validation episode is early November 2025, not 2023.
+- **Hour alignment.** CPCB hours run [HH:30, HH+1:30) UTC. Each output hour [h, h+1) UTC is the overlap-weighted mean of the periods that overlap it (the mean of the two straddling periods); if either is missing the hour is missing.
+- **Sites.** One physical site can appear as several locations (legacy and current sensors, or two agencies at the same coordinates); locations within 300 m are merged into one station before the hourly median over the nearest 5 stations with data.
+- **Live feed.** `data.gov.in` (resource 3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69) answered HTTP 502 on every request on 2026-11-11, so its field names, filters and city spellings are not yet checked against a real reply.
+
+### CPCB PM2.5 locations within 25 km of each city centre
+
+"Locations" counts CPCB-provider locations with a pm25 sensor (including legacy and duplicate records); "reporting" those whose last reading was within 7 days of 2026-11-11.
+
+| City | Locations | Reporting |
+|---|---|---|
+| delhi | 57 | 48 |
+| gurugram | 24 | 21 |
+| noida | 38 | 32 |
+| ghaziabad | 28 | 25 |
+| faridabad | 29 | 26 |
+| amritsar | 1 | 1 |
+| ludhiana | 1 | 1 |
+| jalandhar | 1 | 1 |
+| patiala | 1 | 1 |
+| bathinda | 1 | 0 |
+| chandigarh | 5 | 5 |
+| ambala | 1 | 1 |
+| hisar | 1 | 1 |
+| rohtak | 2 | 1 |
+| karnal | 1 | 1 |
+| panipat | 1 | 1 |
+| meerut | 3 | 3 |
+| agra | 6 | 6 |
+| kanpur | 4 | 3 |
+| lucknow | 8 | 6 |
+| prayagraj | 3 | 3 |
+| varanasi | 5 | 4 |
+| gorakhpur | 1 | 1 |
+| bareilly | 2 | 2 |
+| moradabad | 7 | 6 |
+| patna | 7 | 7 |
+| gaya | 4 | 3 |
+| muzaffarpur | 4 | 3 |
+| jaipur | 7 | 6 |
+| jodhpur | 6 | 5 |
+| bhopal | 4 | 4 |
+| indore | 6 | 5 |
+| ahmedabad | 12 | 11 |
+| mumbai | 36 | 32 |
+| pune | 16 | 13 |
+| hyderabad | 11 | 10 |
+| bengaluru | 15 | 10 |
+| chennai | 9 | 7 |
+| kolkata | 15 | 13 |
+| guwahati | 5 | 5 |
+
+### Hourly coverage, 2025-11-03 to 2025-11-09 (168 hours, real calls)
+
+Stations = stations (nearest first, at most 5) with at least one valid hour; Hours present = share of the 168 hours with a value in the hourly median.
+
+| City | Stations with data | Hours present |
+|---|---|---|
+| delhi | 5 | 89 % |
+| gurugram | 5 | 89 % |
+| noida | 5 | 89 % |
+| ghaziabad | 5 | 89 % |
+| faridabad | 5 | 89 % |
+| amritsar | 1 | 88 % |
+| ludhiana | 1 | 83 % |
+| jalandhar | 1 | 88 % |
+| patiala | 1 | 86 % |
+| bathinda | 1 | 85 % |
+| chandigarh | 5 | 89 % |
+| ambala | 1 | 88 % |
+| hisar | 1 | 88 % |
+| rohtak | 1 | 71 % |
+| karnal | 1 | 88 % |
+| panipat | 1 | 82 % |
+| meerut | 3 | 89 % |
+| agra | 5 | 89 % |
+| kanpur | 3 | 89 % |
+| lucknow | 5 | 89 % |
+| prayagraj | 3 | 89 % |
+| varanasi | 4 | 89 % |
+| gorakhpur | 1 | 84 % |
+| bareilly | 2 | 88 % |
+| moradabad | 5 | 89 % |
+| patna | 5 | 89 % |
+| gaya | 3 | 89 % |
+| muzaffarpur | 3 | 89 % |
+
+All 28 northern cities have at least one station with hourly data for that week. At most 89 % of hours are present for any city (the half-hour alignment drops an hour wherever either straddling period is missing).

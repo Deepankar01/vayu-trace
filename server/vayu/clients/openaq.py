@@ -4,15 +4,21 @@ Facts verified against the live API on 2026-11-11:
 - The key travels in the `X-API-Key` header, never in a URL (so never in a cache key).
 - `/locations?coordinates=lat,lon&radius=m` (radius <= 25000) lists locations; CPCB-fed ones have
   `provider.name == "CPCB"` and a sensor whose `parameter.name == "pm25"`. A location can carry
-  two pm25 sensors (a legacy one and a newer one covering different years).
-- `/sensors/{id}/hours` returns one-hour averages. CPCB reports hours on the Indian clock, so the
-  periods run :30 to :30 UTC. We label each value by the UTC hour its period *starts* in
-  (floor of `period.datetimeFrom.utc`): index h covers [start + h, start + h + 1) in the sense that
-  the averaging window begins inside that hour. That is up to 30 minutes of skew, never more.
+  two pm25 sensors (a legacy one and a newer one covering different years), and one physical
+  site can appear as two locations 0 m apart; locations within 300 m are merged into one station.
+- `/sensors/{id}/hours` returns one-hour averages. CPCB reports on the Indian clock, so real
+  periods run [HH:30, HH+1:30) UTC.
+- Alignment: output index h is the mean over [start + h, start + h + 1) UTC, built as the
+  overlap-weighted mean of the periods overlapping that hour (for :30 periods, the mean of the
+  two straddling periods; whole-hour periods map directly). If any needed period is missing or
+  invalid, the hour is NaN; nothing is filled from one side. One extra hour is fetched on each
+  side of the window so edge hours are complete.
 - Rate limit headers: `x-ratelimit-limit` (60), `x-ratelimit-remaining`, `x-ratelimit-reset`
   (seconds until the window resets).
-- OpenAQ's CPCB-provider history has a hole: Delhi's older sensors end in 2022 and the current
-  ones begin in 2025, so a window in between has no stations with data (all NaN, count 0).
+- COVERAGE GAP: the CPCB-provider PM2.5 history in OpenAQ for Delhi runs to about Oct 2022 and
+  starts again on 2025-02-18; dates in between return no measurements (all NaN, station_count 0).
+  The `caaqm` provider is deliberately not used: its Delhi sensors also end by 2022-10-31 and it
+  would duplicate sites. See docs/data-notes.md, "Measured data coverage".
 """
 import json
 import math
@@ -43,6 +49,10 @@ PROVISIONAL_TTL_S = 3600
 CHUNK_HOURS = 720  # one request per 30 days keeps each reply under the 1000-row page limit
 MAX_RETRIES = 5  # on HTTP 429, waiting for the reset the server announces
 DEFAULT_RESET_S = 60.0
+MAX_WAIT_S = 120.0
+EMPTY_DISCOVERY_TTL_S = 3600  # an empty locations reply may be a glitch: do not pin it
+EMPTY_HOURS_TTL_S = 24 * 3600  # OpenAQ holes can be backfilled: an empty window is never final
+MERGE_M = 300.0  # locations this close are one physical site
 HOUR = timedelta(hours=1)
 
 
@@ -87,9 +97,12 @@ def _parse_ts(text) -> datetime | None:
 
 def _wait_s(resp: httpx.Response) -> float:
     try:
-        return max(float(resp.headers["x-ratelimit-reset"]), 1.0)
+        wait = float(resp.headers["x-ratelimit-reset"])
     except (KeyError, ValueError):
         return DEFAULT_RESET_S
+    if not math.isfinite(wait):
+        return DEFAULT_RESET_S
+    return min(max(wait, 1.0), MAX_WAIT_S)
 
 
 def _get(path: str, params: dict, sleep: Callable[[float], None]) -> bytes:
@@ -122,6 +135,11 @@ def _results(raw: bytes, what: str) -> list[dict]:
     results = body.get("results") if isinstance(body, dict) else None
     if not isinstance(results, list) or not all(isinstance(r, dict) for r in results):
         raise UpstreamError(SERVICE, f"unexpected {what} reply (no results list)")
+    found = (body.get("meta") or {}).get("found") if isinstance(body.get("meta"), dict) else None
+    digits = "".join(ch for ch in str(found) if ch.isdigit()) if found is not None else ""
+    if digits and int(digits) > len(results):
+        raise UpstreamError(
+            SERVICE, f"truncated {what} reply: {len(results)} of {found} results returned")
     return results
 
 
@@ -134,6 +152,32 @@ def _validated(path: str, params: dict, what: str, sleep) -> Callable[[], bytes]
     return fetch
 
 
+class _Miss(Exception):
+    pass
+
+
+def _raise_miss() -> bytes:
+    raise _Miss
+
+
+def _cached_unless_empty(key, fetch, ttl_s, empty_ttl_s, what, stable_prefix="") -> list[dict]:
+    """Results of `fetch`, cached `ttl_s` when non-empty but at most `empty_ttl_s` when empty."""
+    main = f"{stable_prefix}{key}"
+    try:
+        return _results(cached_bytes("openaq", main, _raise_miss, ttl_s), what)
+    except _Miss:
+        pass
+
+    def fetch_and_promote() -> bytes:
+        raw = fetch()
+        if _results(raw, what):
+            cached_bytes("openaq", main, lambda: raw, ttl_s)
+        return raw
+
+    return _results(
+        cached_bytes("openaq", f"empty-ok:{main}", fetch_and_promote, empty_ttl_s), what)
+
+
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     a = (math.sin((p2 - p1) / 2) ** 2
@@ -142,13 +186,18 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def stations_near(city: City, sleep: Callable[[float], None] = time.sleep) -> list[Station]:
-    """CPCB-provider locations within 25 km with a pm25 sensor, nearest first (cached 7 days)."""
+    """CPCB-provider stations within 25 km with a pm25 sensor, nearest first.
+
+    Locations within 300 m of an already-listed (nearer) one are merged into it: one physical
+    site must not enter the median twice. Cached 7 days (1 hour if the reply was empty).
+    """
     params = {"coordinates": f"{city.lat},{city.lon}", "radius": RADIUS_M, "limit": 1000}
-    key = f"locations:{city.lat},{city.lon}:{RADIUS_M}"
-    raw = cached_bytes("openaq", key, _validated("/locations", params, "locations", sleep),
-                       DISCOVERY_TTL_S)
-    out = []
-    for loc in _results(raw, "locations"):
+    results = _cached_unless_empty(
+        f"locations:{city.lat},{city.lon}:{RADIUS_M}",
+        _validated("/locations", params, "locations", sleep),
+        DISCOVERY_TTL_S, EMPTY_DISCOVERY_TTL_S, "locations")
+    found = []
+    for loc in results:
         if (loc.get("provider") or {}).get("name") != PROVIDER:
             continue
         sensors = tuple(
@@ -159,45 +208,77 @@ def stations_near(city: City, sleep: Callable[[float], None] = time.sleep) -> li
         if not sensors or "latitude" not in coords or "longitude" not in coords:
             continue
         dist = _haversine_m(city.lat, city.lon, coords["latitude"], coords["longitude"])
-        out.append(Station(
-            loc["id"], str(loc.get("name", "")), dist, sensors,
-            _parse_ts((loc.get("datetimeFirst") or {}).get("utc")),
-            _parse_ts((loc.get("datetimeLast") or {}).get("utc")),
+        found.append((
+            dist, coords["latitude"], coords["longitude"],
+            Station(loc["id"], str(loc.get("name", "")), dist, sensors,
+                    _parse_ts((loc.get("datetimeFirst") or {}).get("utc")),
+                    _parse_ts((loc.get("datetimeLast") or {}).get("utc"))),
         ))
-    out.sort(key=lambda s: s.distance_m)
+    found.sort(key=lambda t: t[0])
+    kept: list[tuple[float, float, Station]] = []
+    out: list[Station] = []
+    for _dist, lat, lon, st in found:
+        for i, (klat, klon, ks) in enumerate(kept):
+            if _haversine_m(lat, lon, klat, klon) <= MERGE_M:
+                firsts = [t for t in (ks.first, st.first) if t]
+                lasts = [t for t in (ks.last, st.last) if t]
+                out[i] = Station(ks.id, ks.name, ks.distance_m,
+                                 ks.sensor_ids + tuple(x for x in st.sensor_ids
+                                                       if x not in ks.sensor_ids),
+                                 min(firsts) if firsts else None, max(lasts) if lasts else None)
+                break
+        else:
+            kept.append((lat, lon, st))
+            out.append(st)
     return out
 
 
 def _hours_raw(sensor_id: int, t0: datetime, t1: datetime, now: datetime, sleep) -> list[dict]:
-    """Hourly rows for one sensor over [t0, t1); settled windows are cached forever."""
+    """Hourly rows for one sensor over [t0, t1).
+
+    A settled window (ended more than 3 days before `now`) with data is cached forever under a
+    `final:` key; one that is still settling is cached 1 hour under `provisional:`. An EMPTY
+    reply is never final (OpenAQ may backfill holes): it lives 24 hours at most.
+    """
     final = t1 < now - FINAL_AFTER
     params = {"datetime_from": _iso(t0), "datetime_to": _iso(t1), "limit": 1000}
     key = f"hours:{sensor_id}:{params['datetime_from']}:{params['datetime_to']}"
-    # finality is part of the key: a provisional reply is never promoted to the immutable entry
-    raw = cached_bytes(
-        "openaq", f"{'final' if final else 'provisional'}:{key}",
-        _validated(f"/sensors/{sensor_id}/hours", params, "hours", sleep),
-        None if final else PROVISIONAL_TTL_S,
-    )
-    return _results(raw, "hours")
+    fetch = _validated(f"/sensors/{sensor_id}/hours", params, "hours", sleep)
+    if final:
+        return _cached_unless_empty(key, fetch, None, EMPTY_HOURS_TTL_S, "hours", "final:")
+    return _results(cached_bytes("openaq", "provisional:" + key, fetch, PROVISIONAL_TTL_S), "hours")
 
 
 def _place(rows: list[dict], start: datetime, hours: int) -> np.ndarray:
-    """Place hourly rows on `start + h`; invalid, absurd or foreign-interval rows stay NaN."""
-    out = np.full(hours, np.nan, dtype=np.float32)
+    """Hour means on [start + h, start + h + 1) from overlapping one-hour periods.
+
+    Each valid period contributes value * overlap to the hours it overlaps; an hour whose
+    overlapping valid periods do not cover all 3600 s (a missing, invalid or absurd neighbour)
+    is NaN. Rows whose interval is not 01:00:00 are ignored; a period seen twice counts once.
+    """
+    num = np.zeros(hours)
+    cover = np.zeros(hours)
+    seen: set[datetime] = set()
     for row in rows:
         period = row.get("period") or {}
         if period.get("interval") != "01:00:00":
             continue
         t = _parse_ts((period.get("datetimeFrom") or {}).get("utc"))
         value = row.get("value")
-        if t is None or isinstance(value, bool) or not isinstance(value, int | float):
+        if t is None or t in seen or isinstance(value, bool) or not isinstance(value, int | float):
             continue
+        seen.add(t)
         if not 0.0 <= value <= VALUE_MAX:
             continue
-        idx = int((t.replace(minute=0, second=0, microsecond=0) - start) // HOUR)
-        if 0 <= idx < hours:
-            out[idx] = value
+        a = (t - start).total_seconds()
+        for h in range(math.floor(a / 3600), math.floor((a + 3600 - 1) / 3600) + 1):
+            if 0 <= h < hours:
+                overlap = min(a + 3600, (h + 1) * 3600) - max(a, h * 3600)
+                num[h] += value * overlap
+                cover[h] += overlap
+    out = np.full(hours, np.nan, dtype=np.float32)
+    full = cover >= 3600 - 1e-6
+    out[full] = num[full] / cover[full]
     return out
 
 
@@ -206,7 +287,7 @@ def _sensor_series(sensor_id, start, hours, now, sleep) -> np.ndarray:
     for off in range(0, hours, CHUNK_HOURS):
         n = min(CHUNK_HOURS, hours - off)
         t0 = start + off * HOUR
-        # pad by an hour each side: a period starts at :30 and may straddle the chunk edge
+        # one extra hour each side: straddling :30 periods must be complete at the edges
         rows = _hours_raw(sensor_id, t0 - HOUR, t0 + (n + 1) * HOUR, now, sleep)
         out[off:off + n] = _place(rows, t0, n)
     return out
@@ -218,16 +299,19 @@ def city_pm25(
 ) -> MeasuredSeries:
     """Hourly median PM2.5 (ug/m3, CPCB via OpenAQ) over up to 5 stations within 25 km of `city`.
 
-    `start` is tz-aware UTC on a whole hour; index h is labelled by the UTC hour in which the
-    one-hour averaging period begins (see the module docstring). An hour with no station value
-    is NaN, never zero and never interpolated. Stations are tried nearest first; only stations
-    with at least one valid value in the window count towards `station_count` (a location that
-    reported nothing then is skipped, up to 15 tried). A station's legacy and current pm25
-    sensors are merged, the first valid value per hour winning.
+    `start` is tz-aware UTC on a whole hour. Index h is the mean over [start + h, start + h + 1)
+    UTC, an overlap-weighted mean of CPCB's one-hour periods (see the module docstring); an hour
+    that cannot be built from complete periods is NaN, never zero and never interpolated.
+    Stations are tried nearest first; only stations with at least one valid value in the window
+    count towards `station_count` (a location that reported nothing then is skipped, up to 15
+    tried). A station's sensors are merged, the first valid value per hour winning, and the
+    median is taken per hour over the stations that have a value.
     """
     start = _utc(start)
     if start.minute or start.second or start.microsecond:
         raise ValueError("start must be on a whole hour")
+    if hours <= 0:
+        raise ValueError("hours must be positive")
     now = _utc(now) if now is not None else _now()
     end = start + hours * HOUR
     used: list[np.ndarray] = []
@@ -235,8 +319,10 @@ def city_pm25(
     for st in stations_near(city, sleep):
         if len(used) == MAX_STATIONS or tried == MAX_CANDIDATES:
             break
-        if (st.last and st.last < start) or (st.first and st.first >= end):
-            continue  # the station's whole record lies outside the window
+        # `last` comes from a cache up to 7 days old: only trust it past that staleness
+        if (st.last and st.last + timedelta(seconds=DISCOVERY_TTL_S) < start) or (
+                st.first and st.first >= end):
+            continue
         tried += 1
         series = np.full(hours, np.nan, dtype=np.float32)
         for sid in st.sensor_ids:

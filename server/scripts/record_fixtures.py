@@ -2,7 +2,6 @@
 
 The API key is read from the environment/.env and never written to disk.
 """
-import json
 import sys
 from pathlib import Path
 
@@ -102,22 +101,26 @@ def record_openaq() -> None:
 
 
 def record_datagov() -> None:
-    """One page of the CPCB real-time AQI feed. The URL (it holds the key) is never stored."""
+    """The CPCB real-time AQI feed exactly as production requests it (PM2.5 filter, paged).
+
+    Pages are saved raw as pm25_page_N.json via the client's own `_fetch_page`, so the recording
+    cannot drift from what production asks for. The request URL (it holds the key) is not stored.
+    """
+    from vayu.clients import datagov
+
     out = FIXTURES / "datagov"
     out.mkdir(parents=True, exist_ok=True)
-    url = "https://api.data.gov.in/resource/3b01bcb8-0b14-4abf-b6f2-c1bfd384ba69"
-    params = {"api-key": config.data_gov_in_api_key(), "format": "json", "limit": 100,
-              "filters[city]": "Delhi"}
-    resp = httpx.get(url, params=params, timeout=180)
-    resp.raise_for_status()
-    body = resp.json()
-    for k in ("href", "url", "link"):  # echo fields that could carry the request URL
-        body.pop(k, None)
-    text = json.dumps(body, ensure_ascii=False, indent=1)
-    if params["api-key"] in text:
-        raise SystemExit("response echoes the key, not saved")
-    (out / "delhi_page.json").write_text(text)
-    print(f"saved delhi_page.json ({len(text)} bytes)")
+    key, got, total, n = config.data_gov_in_api_key(), 0, None, 0
+    while total is None or got < total:
+        raw = datagov._fetch_page(got)
+        if key.encode() in raw:
+            raise SystemExit("response echoes the key, not saved")
+        records, total = datagov._records(raw)
+        if not records or total is None:
+            raise SystemExit("empty page or no total: not a usable recording")
+        (out / f"pm25_page_{n}.json").write_bytes(raw)
+        print(f"saved pm25_page_{n}.json ({len(raw)} bytes, {len(records)} records of {total})")
+        got, n = got + len(records), n + 1
 
 
 if __name__ == "__main__":
