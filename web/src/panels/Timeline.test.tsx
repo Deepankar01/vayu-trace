@@ -1,0 +1,66 @@
+import { fireEvent, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { useMapStatus } from "../map/mapStatus";
+import { makeMeta } from "../test-utils/meta";
+import { renderPanel } from "../test-utils/panels";
+import { Timeline } from "./Timeline";
+
+const CONTINUE = "forecast assumes fires continue at recent levels";
+const STOP = "forecast assumes fires stop now";
+
+afterEach(() => useMapStatus.setState({ plumeLoadingHour: null, pathHour: null }));
+
+describe("Timeline", () => {
+  it("no caption when no fire hours are assumed", () => {
+    renderPanel(<Timeline />);
+    expect(screen.queryByText(CONTINUE)).toBeNull();
+    expect(screen.queryByText(STOP)).toBeNull();
+  });
+  it("caption whenever fires are assumed (continue by default)", () => {
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
+    expect(screen.getByText(CONTINUE)).toBeInTheDocument();
+  });
+  it("caption says fires stop when that scenario is on", () => {
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }), firesContinue: false });
+    expect(screen.getByText(STOP)).toBeInTheDocument();
+    expect(screen.queryByText(CONTINUE)).toBeNull();
+  });
+  it("marks where fires are assumed when that is before the forecast part", () => {
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: 24 }) });
+    expect(screen.getByText("fires assumed from here")).toBeInTheDocument();
+    expect(screen.getByTestId("forecast-part")).toBeInTheDocument();
+  });
+  it("marks fires assumed when there is no forecast part", () => {
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 20, forecast_from: null }) });
+    expect(screen.getByText("fires assumed from here")).toBeInTheDocument();
+    expect(screen.queryByTestId("forecast-part")).toBeNull();
+  });
+  it("no fires-assumed marker when it coincides with the forecast start", () => {
+    renderPanel(<Timeline />, { meta: makeMeta({ fires_assumed_from: 24, forecast_from: 24 }) });
+    expect(screen.queryByText("fires assumed from here")).toBeNull();
+  });
+  it("speed control sets hours per second", () => {
+    const { store } = renderPanel(<Timeline />);
+    fireEvent.click(screen.getByRole("radio", { name: "4×" }));
+    expect(store.getState().speed).toBe(4);
+    expect(screen.getByRole("radio", { name: "4×" })).toBeChecked();
+  });
+  it("play button toggles playback", () => {
+    const { store } = renderPanel(<Timeline />);
+    fireEvent.click(screen.getByRole("button", { name: "Play" }));
+    expect(store.getState().playing).toBe(true);
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+  });
+  it("scrubber sets the playhead and shows the IST time", () => {
+    const { store } = renderPanel(<Timeline />);
+    fireEvent.change(screen.getByRole("slider", { name: "Playhead" }), { target: { value: "13" } });
+    expect(store.getState().hour).toBe(13);
+    // test meta starts 2026-11-10 00:00 UTC; hour 13 = 18:30 IST
+    expect(screen.getByTestId("clock")).toHaveTextContent("10 Nov · 18:30");
+  });
+  it("shows the hour the map is loading", () => {
+    useMapStatus.setState({ plumeLoadingHour: 7 });
+    renderPanel(<Timeline />);
+    expect(screen.getByText("loading hour 7…")).toBeInTheDocument();
+  });
+});

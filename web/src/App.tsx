@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { MapContainer } from "./map/MapContainer";
 import { useDropStore } from "./map/dropStore";
-import { useMapStatus } from "./map/mapStatus";
+import { CityPanel } from "./panels/CityPanel";
+import { DropSourceDialog } from "./panels/DropSourceDialog";
+import { initialHour } from "./panels/initialHour";
+import { useKeyboard } from "./panels/keyboard";
+import { PlumeLegend } from "./panels/PlumeLegend";
+import { RunStatus } from "./panels/RunStatus";
+import { SourcesPanel } from "./panels/SourcesPanel";
+import { Timeline } from "./panels/Timeline";
+import { TopBar } from "./panels/TopBar";
+import "./panels/panels.css";
 import { useStore } from "./state/store";
+
+const DEFAULT_CITY = "delhi";
 
 /** `?date=YYYY-MM-DD`, else today's UTC date. */
 function runDate(): string {
@@ -10,89 +21,36 @@ function runDate(): string {
   return q && /^\d{4}-\d{2}-\d{2}$/.test(q) ? q : new Date().toISOString().slice(0, 10);
 }
 
-/**
- * TEMPORARY until the panels exist (next task): keyboard controls for verifying the map.
- * Space play/pause, Left/Right one hour, 1/2/3 plume mode PM2.5 / AQI / difference from
- * baseline, W wind on/off, D arm "drop source".
- */
-function useDevKeys() {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return;
-      const s = useStore.getState();
-      switch (e.key) {
-        case " ":
-          e.preventDefault();
-          s.togglePlay();
-          break;
-        case "ArrowRight":
-          s.setHour(Math.floor(s.hour) + 1);
-          break;
-        case "ArrowLeft":
-          s.setHour(Math.ceil(s.hour) - 1);
-          break;
-        case "1":
-          s.setCompareBaseline(false);
-          s.setLayer("aqi", false);
-          s.setLayer("pm25", true);
-          break;
-        case "2":
-          s.setCompareBaseline(false);
-          s.setLayer("pm25", false);
-          s.setLayer("aqi", true);
-          break;
-        case "3":
-          s.setCompareBaseline(true);
-          break;
-        case "w":
-        case "W":
-          s.setLayer("wind", !s.layers.wind);
-          break;
-        case "d":
-        case "D":
-          useDropStore.getState().arm();
-          break;
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-}
-
-/** TEMPORARY status text (the next task replaces it with panels). */
-function DevStatus({ problems, drop }: { problems: Record<string, string>; drop: [number, number] | null }) {
-  const s = useStore();
-  const armed = useDropStore((d) => d.armedForDrop);
-  const loadingHour = useMapStatus((m) => m.plumeLoadingHour);
-  const lines = [
-    `${s.status}${s.stage && s.status !== "ready" ? ` · ${s.stage}` : ""}${s.status === "running" ? ` · ${Math.round(s.progress * 100)}%` : ""}`,
-    s.meta ? `hour ${s.hour.toFixed(2)} / ${s.meta.hours.length - 1} · ${s.meta.hours[Math.floor(s.hour)]} UTC · ${s.playing ? `playing ${s.speed}×` : "paused"}` : null,
-    s.meta ? `plume ${s.compareBaseline ? "difference from baseline" : s.layers.aqi ? "AQI (indicative: hourly PM2.5 on the 24 h scale)" : "PM2.5"} · wind ${s.layers.wind ? "on" : "off"}` : null,
-    loadingHour !== null ? `loading hour ${loadingHour}…` : null,
-    s.selectedCity ? `selected ${s.selectedCity}` : null,
-    armed ? "drop source: click the map (Esc cancels)" : null,
-    drop ? `drop point ${drop[0].toFixed(2)}, ${drop[1].toFixed(2)}` : null,
-    s.error, s.notice, s.frameError, s.firesError,
-    ...Object.values(problems),
-    "space play · ←/→ hour · 1/2/3 PM2.5/AQI/diff · W wind · D drop",
-  ].filter(Boolean);
-  return (
-    <div
-      className="panel"
-      style={{ position: "absolute", left: 12, bottom: 12, padding: "8px 10px", fontSize: 11, color: "var(--mute)", maxWidth: 520, pointerEvents: "none" }}
-    >
-      {lines.map((l, i) => <div key={i}>{l}</div>)}
-    </div>
-  );
+function startRun(date: string) {
+  const url = new URL(window.location.href);
+  url.searchParams.set("date", date);
+  window.history.replaceState(null, "", url);
+  void useStore.getState().startRun(date);
 }
 
 export default function App() {
   const [problems, setProblems] = useState<Record<string, string>>({});
-  const [drop, setDrop] = useState<[number, number] | null>(null);
-  useDevKeys();
+  const [leftOpen, setLeftOpen] = useState(false);
+  const frameError = useStore((s) => s.frameError);
+  const firesError = useStore((s) => s.firesError);
+  const ready = useStore((s) => s.status === "ready");
+  useKeyboard(useStore);
+
+  // a newly loaded run opens on its date's evening (a refresh of the same date keeps the playhead)
+  useEffect(
+    () =>
+      useStore.subscribe((s, prev) => {
+        // deferred: the store installs a meta in several steps (frame cache configured after `meta`
+        // is set); moving the playhead inside that would leave the cache centred on the old hour
+        const meta = s.meta;
+        if (meta && meta.date !== prev.meta?.date) queueMicrotask(() => useStore.getState().setHour(initialHour(meta)));
+      }),
+    [],
+  );
 
   useEffect(() => {
-    void useStore.getState().startRun(runDate());
+    useStore.getState().selectCity(DEFAULT_CITY); // measured / CAMS load once the run is ready
+    startRun(runDate());
   }, []);
 
   const onProblem = useCallback((key: string, message: string | null) => {
@@ -105,15 +63,43 @@ export default function App() {
     });
   }, []);
 
-  const onDropPoint = useCallback((lon: number, lat: number) => {
-    setDrop([lon, lat]);
-    useDropStore.getState().disarm(); // the dialog (next task) opens here
+  const onDropPoint = useCallback((lon: number, lat: number, x: number, y: number) => {
+    useDropStore.getState().place({ lon, lat, x, y });
   }, []);
+
+  const shownProblems = [frameError, firesError, ...Object.values(problems)].filter(Boolean);
 
   return (
     <>
       <MapContainer onDropPoint={onDropPoint} onProblem={onProblem} />
-      <DevStatus problems={problems} drop={drop} />
+      <div className="app-ui">
+        <TopBar onDate={startRun} />
+        {ready && (
+          <>
+            <button type="button" className="panel left-toggle" aria-label={leftOpen ? "Hide sources" : "Show sources"}
+              aria-expanded={leftOpen} onClick={() => setLeftOpen((o) => !o)}>
+              <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <path d="M2 4h12M2 8h12M2 12h12" /><circle cx="5" cy="4" r="1.6" fill="#11151d" /><circle cx="11" cy="8" r="1.6" fill="#11151d" /><circle cx="7" cy="12" r="1.6" fill="#11151d" />
+              </svg>
+            </button>
+            <aside className={`panel side left${leftOpen ? " open" : ""}`} aria-label="Sources">
+              <div className="side-scroll"><SourcesPanel /></div>
+            </aside>
+            <aside className="panel side right" aria-label="Selected city">
+              <div className="side-scroll"><CityPanel /></div>
+            </aside>
+            <PlumeLegend />
+          </>
+        )}
+        {shownProblems.length > 0 && (
+          <div className="panel problems" role="status">
+            {shownProblems.map((m, i) => <div key={i}>{m}</div>)}
+          </div>
+        )}
+        <Timeline />
+        <RunStatus onRetry={() => startRun(useStore.getState().meta?.date ?? runDate())} />
+        <DropSourceDialog />
+      </div>
     </>
   );
 }

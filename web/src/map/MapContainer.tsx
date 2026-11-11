@@ -16,7 +16,8 @@ import { useMapAnimation } from "./useMapAnimation";
 import "./map.css";
 
 export interface MapContainerProps {
-  onDropPoint?: (lon: number, lat: number) => void;
+  /** While "Drop source" is armed: the clicked point and its screen position (CSS px, viewport). */
+  onDropPoint?: (lon: number, lat: number, x: number, y: number) => void;
   /** Map and layer problems keyed by source ("plume", "wind", "path", "map", ...); null clears. */
   onProblem?: (key: string, message: string | null) => void;
 }
@@ -39,6 +40,7 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
       useStore,
       (k, m) => latest.current.onProblem?.(k, m),
       (hour) => useMapStatus.setState({ plumeLoadingHour: hour }),
+      (hour) => useMapStatus.setState({ pathHour: hour }),
     );
     sceneRef.current = scene;
     return () => {
@@ -77,7 +79,8 @@ export function MapContainer({ onDropPoint, onProblem }: MapContainerProps) {
     map.on("resize", settle);
     map.on("click", (e) => {
       if (!useDropStore.getState().armedForDrop) return;
-      latest.current.onDropPoint?.(e.lngLat.lng, e.lngLat.lat);
+      const box = map.getContainer().getBoundingClientRect();
+      latest.current.onDropPoint?.(e.lngLat.lng, e.lngLat.lat, box.left + e.point.x, box.top + e.point.y);
     });
   }, []);
 

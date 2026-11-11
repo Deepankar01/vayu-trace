@@ -1,4 +1,4 @@
-import { aqiColor, pm25Ramp, TAG_COLORS } from "./colors";
+import { aqiCategory, aqiColor, pm25Ramp, TAG_COLORS } from "./colors";
 
 describe("pm25Ramp", () => {
   it("is transparent at or below 5 ug/m3", () => {
@@ -101,5 +101,19 @@ describe("TAG_COLORS", () => {
       unexplained: "#5b6475",
       user: "#9aa3b5",
     });
+  });
+});
+
+describe("aqiCategory", () => {
+  it("names the CPCB band with the same rounding as aqiColor", () => {
+    expect(aqiCategory(50.4)).toBe("Good");
+    expect(aqiCategory(50.5)).toBe("Satisfactory");
+    expect(aqiCategory(301)).toBe("Very Poor");
+    expect(aqiCategory(438)).toBe("Severe");
+  });
+  it("is null for missing or invalid", () => {
+    expect(aqiCategory(null)).toBeNull();
+    expect(aqiCategory(NaN)).toBeNull();
+    expect(aqiCategory(-1)).toBeNull();
   });
 });

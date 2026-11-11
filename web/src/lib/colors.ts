@@ -38,13 +38,14 @@ export function pm25Ramp(v: number): Rgba {
   return [c[0], c[1], c[2], alpha];
 }
 
-const AQI_BANDS: { max: number; color: string }[] = [
-  { max: 50, color: "#5fd38d" }, // Good
-  { max: 100, color: "#b6d96a" }, // Satisfactory
-  { max: 200, color: "#f2d15c" }, // Moderate
-  { max: 300, color: "#ff8a3d" }, // Poor
-  { max: 400, color: "#ff5a5a" }, // Very Poor
-  { max: Infinity, color: "#b3202a" }, // Severe
+/** CPCB National AQI categories (upper bound inclusive, after rounding), in order. */
+export const AQI_BANDS: readonly { max: number; color: string; name: string }[] = [
+  { max: 50, color: "#5fd38d", name: "Good" },
+  { max: 100, color: "#b6d96a", name: "Satisfactory" },
+  { max: 200, color: "#f2d15c", name: "Moderate" },
+  { max: 300, color: "#ff8a3d", name: "Poor" },
+  { max: 400, color: "#ff5a5a", name: "Very Poor" },
+  { max: Infinity, color: "#b3202a", name: "Severe" },
 ];
 
 /**
@@ -56,4 +57,11 @@ export function aqiColor(aqi: number | null | undefined): string {
   if (aqi == null || Number.isNaN(aqi) || aqi < 0) return MUTE;
   const rounded = Math.round(aqi);
   return AQI_BANDS.find((b) => rounded <= b.max)!.color;
+}
+
+/** CPCB category name for an AQI value (same rounding and banding as `aqiColor`); null when invalid. */
+export function aqiCategory(aqi: number | null | undefined): string | null {
+  if (aqi == null || Number.isNaN(aqi) || aqi < 0) return null;
+  const rounded = Math.round(aqi);
+  return AQI_BANDS.find((b) => rounded <= b.max)!.name;
 }

@@ -68,6 +68,7 @@ export class MapScene {
   private readonly store: AppStore;
   private readonly onProblem: (key: string, message: string | null) => void;
   private readonly onPlumeLoading: (hour: number | null) => void;
+  private readonly onPathHour: (hour: number | null) => void;
   private plumeWaiting: number | null = null;
 
   private composer: PlumeComposer | null = null;
@@ -89,6 +90,7 @@ export class MapScene {
   private pathBuild: string | null = null;
   private pathAbort: AbortController | null = null;
   private pathPoints: [number, number][] | null = null;
+  private pathPointsHour: number | null = null;
   private pathVersion = 0;
 
   private readonly slots = {
@@ -105,15 +107,18 @@ export class MapScene {
 
   /**
    * `onProblem(key, message|null)`: per-source problems for the UI. `onPlumeLoading(hour|null)`:
-   * the hour the plume waits for (see `missingPlumeHour`), on changes only.
+   * the hour the plume waits for (see `missingPlumeHour`), on changes only. `onPathHour(hour|null)`:
+   * the whole hour of the drawn back-trajectory (null when none is drawn), when it changes.
    */
   constructor(
     store: AppStore, onProblem: (key: string, message: string | null) => void,
     onPlumeLoading: (hour: number | null) => void = () => {},
+    onPathHour: (hour: number | null) => void = () => {},
   ) {
     this.store = store;
     this.onProblem = onProblem;
     this.onPlumeLoading = onPlumeLoading;
+    this.onPathHour = onPathHour;
     this.wind = new WindCache(
       (hour, signal) => {
         const runId = store.getState().runId;
@@ -300,9 +305,11 @@ export class MapScene {
       this.pathLast = { city: city!, hour };
       this.fetchPath(s.runId, city!, hour);
     }
-    return this.slots.path.update([this.pathVersion, env.flatBeforeId], () =>
-      this.pathPoints && this.pathPoints.length > 1 ? pathLayer(this.pathPoints, env.flatBeforeId) : null,
-    );
+    return this.slots.path.update([this.pathVersion, env.flatBeforeId], () => {
+      const drawn = this.pathPoints !== null && this.pathPoints.length > 1;
+      this.onPathHour(drawn ? this.pathPointsHour : null);
+      return drawn ? pathLayer(this.pathPoints!, env.flatBeforeId) : null;
+    });
   }
 
   private fetchPath(runId: string, city: string, hour: number): void {
@@ -312,6 +319,7 @@ export class MapScene {
       (points) => {
         if (controller.signal.aborted) return;
         this.pathPoints = points;
+        this.pathPointsHour = hour;
         this.pathVersion++;
         this.onProblem("path", null);
       },
