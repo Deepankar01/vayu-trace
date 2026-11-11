@@ -199,3 +199,49 @@ Window mean 142.6 µg/m³; top contributors over the window: industry_delhi_ncr 
 - **Version 1** used whole-hour snapshots and no kernel. With 200 parcels for every tag, the simulation stage took 128 s (cold wall 158.6 s, of which `MetField.sample` was 82 s), so the default was lowered to 100 (warm wall 68.7 s, peak 215,047 parcels).
 - **Version 2** added left-point hour means, the kernel, the 400-parcel rest_of_india budget and the met fast path, at a warm wall of 114.1 s, measured under heavier machine load.
 - **Version 3** changed to trapezoid hour means and faster terrain look-ups, at a warm wall of 53.5 s.
+
+## Measured data coverage (`server/vayu/clients/openaq.py`, Task 16)
+
+### The CPCB gap in OpenAQ
+CPCB-provider PM2.5 in OpenAQ v3 runs to about October 2022 and starts again on 2025-02-18; dates in between return no measurements (all hours NaN, station count 0). The `caaqm` provider is not used: its Delhi sensors also end by 2022-10-31 and it would duplicate sites. Consequences:
+- November 2023, the episode the design named for validation, cannot be validated. The validation episode is **2025-11-03 to 2025-11-09** instead.
+- `MIN_DATE` stays **2018-04-01** (fires from two VIIRS satellites from then on). It is not raised to the start of measured data: a replay without measurements is still a valid simulation, and the UI says "No CPCB data for these dates". The plan's rule ("the earliest year in which at least 10 northern cities have CPCB data") was not applied for this reason, and was not evaluated year by year.
+
+### Validation week coverage (2025-11-03 00Z to 2025-11-09 23Z, 168 hours)
+All 28 northern cities have CPCB data that week. Stations are those `city_pm25` used (up to 5 within 25 km that reported in the window); hours are UTC hours with an overlap-aligned measured value.
+
+| city | CPCB stations used | hours with a measured value (of 168) |
+|---|---|---|
+| Delhi | 5 | 149 |
+| Gurugram | 5 | 149 |
+| Noida | 5 | 149 |
+| Ghaziabad | 5 | 149 |
+| Faridabad | 5 | 149 |
+| Amritsar | 1 | 148 |
+| Ludhiana | 1 | 139 |
+| Jalandhar | 1 | 148 |
+| Patiala | 1 | 144 |
+| Bathinda | 1 | 142 |
+| Chandigarh | 5 | 149 |
+| Ambala | 1 | 148 |
+| Hisar | 1 | 147 |
+| Rohtak | 1 | 120 |
+| Karnal | 1 | 147 |
+| Panipat | 1 | 138 |
+| Meerut | 3 | 149 |
+| Agra | 5 | 149 |
+| Kanpur | 3 | 149 |
+| Lucknow | 5 | 149 |
+| Prayagraj | 3 | 149 |
+| Varanasi | 4 | 149 |
+| Gorakhpur | 1 | 141 |
+| Bareilly | 2 | 148 |
+| Moradabad | 5 | 149 |
+| Patna | 5 | 149 |
+| Gaya | 3 | 149 |
+| Muzaffarpur | 3 | 149 |
+
+The same 19 hours are missing in every city (checked for Delhi and Patna; the counts above agree): 11-03 06Z-07Z, 11-03 15Z to 11-04 03Z, 11-04 06Z-07Z and 11-06 10Z-11Z. A gap shared by all stations points at the CPCB feed or its ingestion into OpenAQ, not at single monitors. Those hours are left missing, not filled.
+
+### Mixing height in the Open-Meteo archive by year
+Checked on 2026-11-11 with `fetch_met` for one UTC day each over the whole 33 x 33 lattice (24 hours, all 1089 points): the archive returned `boundary_layer_height` for every point and hour on **2018-11-05** (range 10-4775 m) and on **2023-11-05** (range 10-3720 m); temperature was complete too. So runs from 2018 onwards get real mixing heights, and the time-of-day estimate (`blh_estimated`) is not needed for these dates. Only these two days were checked, not every day of every year. (The raw minimum of 10 m is below `BLH_MIN_M`, the 100 m floor the model applies.) The fetch took several minutes because the free archive answered HTTP 429 to part of the 22 batches and the client backed off.
