@@ -62,5 +62,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(screen.queryByText("Map error: tile 404")).toBeNull();
     expect(screen.getByText("back-trajectory: HTTP 500")).toBeInTheDocument();
-  });
+    // The first import of the whole app (map libraries included) can take longer than the
+    // default 5 s on a cold cache or a busy machine.
+  }, 20_000);
 });
