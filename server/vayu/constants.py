@@ -67,3 +67,39 @@ FIRE_SCALING_DEFAULT = 1.0
 # day-flagged detection far from the peak is not inflated without limit. Night detections are never
 # divided by the profile (see vayu.emissions.fires). Design choice, not fitted.
 FIRE_PROFILE_FLOOR = 0.05
+
+# --- Particle transport (vayu.sim.particles) ---
+
+# Model time step, s. Design choice: 600 s keeps the advective move (u * DT ~ 3-6 km at typical
+# 5-10 m/s) below one 0.1 degree (~11 km) grid cell, so terrain blocking sees every cell crossed.
+DT_S = 600
+
+# Horizontal eddy diffusivity, m^2/s, for the random-walk term of the particle move. Horizontal
+# mixing at mesoscale (10-100 km) is commonly quoted as of order 1e3-1e4 m^2/s (Seinfeld & Pandis,
+# Atmospheric Chemistry and Physics, 3rd ed. 2016, ch. 18 on turbulent dispersion; HYSPLIT's
+# deformation-based horizontal diffusivity, Draxler & Hess 1998, Aust. Meteorol. Mag. 47, 295-308,
+# gives values of this order on mesoscale grids). 3000 is a chosen value inside that range, not
+# fitted.
+K_H_M2_S = 3000
+
+# Dry deposition velocity of PM2.5, m/s. Accumulation-mode particles deposit at typically
+# 0.1-0.5 cm/s over vegetated and rough land surfaces (Seinfeld & Pandis 2016 ch. 19, dry
+# deposition; Zhang et al. 2001, Atmos. Environ. 35, 549-560, size-segregated particle dry
+# deposition scheme). 0.2 cm/s is a chosen value inside that range, not fitted.
+V_DEP_M_S = 0.002
+
+# Below-cloud scavenging (washout) coefficient for particles, Lambda = WASHOUT_A * P**WASHOUT_B
+# (1/s, P = precipitation rate in mm/h). This power-law form is the one used for particles in
+# Lagrangian models of the FLEXPART/HYSPLIT family (Stohl et al. 2005, Atmos. Chem. Phys. 5,
+# 2461-2474, FLEXPART 6.2 technical note; Seinfeld & Pandis 2016 ch. 20, below-cloud scavenging).
+# The exact pair (8.4e-5, 0.79) is taken as specified for this project; it is of the same order as
+# the A ~ 1e-4 1/s, B ~ 0.8 defaults of FLEXPART, but the pair itself has not been re-verified
+# against a primary source. Not fitted.
+WASHOUT_A = 8.4e-5
+WASHOUT_B = 0.79
+
+# Time constant, s, with which a parcel's height relaxes toward terrain + half the mixing-layer
+# height. Design choice (6 h, a fraction of a diurnal cycle), not taken from the literature and
+# not fitted: slow enough that a parcel keeps its altitude against a steep wall, fast enough to
+# follow gentle slopes.
+Z_RELAX_S = 21600
