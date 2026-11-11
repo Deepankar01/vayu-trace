@@ -157,7 +157,7 @@ describe("CityPanel", () => {
     expect(screen.getByText("Shares are uncertain by about ±5 percentage points")).toBeInTheDocument();
     unmount();
     setup(sim100, null, { selectedCity: "ludhiana" });
-    expect(screen.getByText("Shares are uncertain by about ±10 percentage points")).toBeInTheDocument();
+    expect(screen.getByText("Shares are uncertain by about ±15 percentage points")).toBeInTheDocument();
   });
 
   it("states the fire smoke travel time when fire PM is at or above 15 ug/m3", () => {

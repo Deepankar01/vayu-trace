@@ -72,7 +72,7 @@ MIN_DATE = date(2018, 4, 1)  # confirmed in Task 16
 MAX_USER_SOURCES = 5
 BUILD_CACHE = 4  # builds whose RunResult and MetField are kept in memory
 CITY_AREA_KM = 30  # a city value is the mean over the 3x3 cell block (receptors.city_series)
-SHARE_UNCERTAINTY_PP = {"default": 10, "delhi": 5}
+SHARE_UNCERTAINTY_PP = {"default": 15, "delhi": 5}  # measured: ±5 pp Delhi, ±10-15 pp Lucknow, Mumbai
 # A dropped source is simulated under a catalogue tag, because `simulate` only accepts catalogue
 # tags. Its identity affects only the parcel budget (100 per hour for a non rest_of_india sector
 # tag) and fire-age bookkeeping (none for a sector tag); the field is then served as `user_N`.

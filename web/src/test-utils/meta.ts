@@ -33,7 +33,7 @@ export function makeMeta(over: Omit<Partial<Meta>, "hours"> & { hours?: number }
     tags: TEST_TAGS, cities: [city("delhi", "delhi_ncr", n, 10), city("ludhiana", "punjab", n, 20)],
     notes: {
       blh_estimated: false, dust_available: true, inventory_source: "test", inventory_year: 2020,
-      fire_scaling_default: 1, step_stats: {}, city_area_km: 30, share_uncertainty_pp: { default: 10, delhi: 5 },
+      fire_scaling_default: 1, step_stats: {}, city_area_km: 30, share_uncertainty_pp: { default: 15, delhi: 5 },
       min_date: "2018-04-01",
     },
     ...rest,

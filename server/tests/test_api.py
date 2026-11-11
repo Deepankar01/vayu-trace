@@ -386,7 +386,7 @@ def test_meta_contains_34_tags_and_40_cities(env):
     notes = m["notes"]
     assert notes["blh_estimated"] is True and notes["dust_available"] is False
     assert notes["fire_scaling_default"] == 1.0 and notes["city_area_km"] == 30
-    assert notes["share_uncertainty_pp"] == {"default": 10, "delhi": 5}
+    assert notes["share_uncertainty_pp"] == {"default": 15, "delhi": 5}
     assert notes["min_date"] == "2018-04-01" and notes["step_stats"]["depleted"] == 2
     assert {"inventory_source", "inventory_year"} <= set(notes)
     delhi = next(c for c in m["cities"] if c["id"] == "delhi")
