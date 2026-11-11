@@ -103,3 +103,15 @@ WASHOUT_B = 0.79
 # until z_m catches up) once that lag exceeds roughly the mixed-layer depth. Shallow night layers
 # therefore block upslope flow; deep daytime layers do not. Steep walls block in either case.
 Z_RELAX_S = 21600
+
+# --- Run and gridding (vayu.sim.run) ---
+
+# Hygroscopic growth factor for the separate "haze" quantity (never applied to the dry PM2.5 that
+# is compared with monitors): f(RH) = 1 + HAZE_GROWTH_COEFF * RH**2 / (1 - RH), RH as a fraction
+# capped at HAZE_RH_CAP. A simple empirical form of the kind used for the humidity enhancement of
+# PM light scattering: f rises slowly at low RH and steeply toward saturation. The physics of
+# aerosol water uptake is covered in Seinfeld & Pandis, Atmospheric Chemistry and Physics; this
+# particular form and its coefficient are a design choice, not taken from a specific paper and
+# not fitted. The cap stops the 1 / (1 - RH) term diverging near saturation (f <= 5.51).
+HAZE_GROWTH_COEFF = 0.25
+HAZE_RH_CAP = 0.95

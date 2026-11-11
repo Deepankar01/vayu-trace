@@ -112,3 +112,45 @@ EDGAR's country table splits road transport (1A3b, inside TRO) into `1.A.3.b_noR
 - Road transport in EDGAR is small (57 kt/yr) next to industry and residential; with no dust sector, the model will under-represent coarse-ish road and construction dust, which the Indian inventory above finds dominant for PM10. Industry now includes process PM2.5 (cement, steel and similar), but not open waste burning or small unorganised industry that EDGAR omits. Do not read the absence of dust as a small dust source.
 - EDGAR 0.1 degree allocation uses global proxy data; city-scale placement is approximate.
 - One annual mean rate for every hour: no diurnal, weekly or seasonal variation (e.g. winter heating or burning).
+
+## Simulation run timing (`server/vayu/sim/run.py`)
+
+Real run for 2023-11-05 (window 2023-11-03 00Z to 2023-11-08 23Z, 144 output hours plus 48 h spin-up = 192 simulated hours, 6 steps per hour), on the development Mac (Apple silicon), measured on 2026-11-11.
+
+| Stage | `PARTICLES_PER_TAG_HOUR` = 200 (plan value) | = 100 (adopted) |
+|---|---|---|
+| fetching fires + inventory | 0.3 s (FIRMS days already cached) | 0.2 s (cached) |
+| fetching weather (Open-Meteo archive, 22 batches) | 10.0 s (part of the batches already cached by an earlier attempt that hit HTTP 429) | 0.2 s (cached) |
+| terrain | 20.3 s (first download of the tiles) | 0.0 s (cached) |
+| simulating + writing frames | 128.0 s | 68.2 s |
+| **wall** | **158.6 s** | **68.7 s** |
+
+Profile of the 200-parcel simulation stage (cProfile, 129.6 s): `particles.step` 116 s, of which `MetField.sample` 82 s, terrain look-ups (`_ground`/`cell_index`) 20 s; writing compressed frames 6.2 s (zlib); gridding 5.0 s; releases 1.8 s. Run time is therefore close to proportional to the number of live parcels.
+
+Decision (spec 7.6 rule): the plan's 200 parcels per tag-hour took 128 s, above the 90 s budget, so `PARTICLES_PER_TAG_HOUR` was lowered to 100 rather than merging `rest_of_india` sectors. A warm-cache run takes 68.7 s. A cold first run of a new date adds the network fetches: the weather archive (about 10-30 s for 22 batches, and Open-Meteo's free tier answered HTTP 429 on the first attempt here, which the client's backoff did not outlast) and, once per installation, the terrain tiles (20 s). Rewriting `MetField.sample`'s gather to be faster (same values) would be the next lever; it was not done here.
+
+| | 200 parcels | 100 parcels |
+|---|---|---|
+| peak live parcels | 430,182 | 215,047 |
+| dropped: left domain | 7,419 | 3,714 |
+| dropped: depleted below 1 % of release mass | 456,748 | 228,435 |
+| dropped: missing met | 0 | 0 |
+| `blh_estimated` | False | False |
+
+The Open-Meteo archive returned `boundary_layer_height` for every lattice point and hour of this 2023 window, so no mixing height was estimated (`blh_estimated` false).
+
+Most parcels end by depletion, not by leaving the domain: with mixing heights near the 100 m floor at night, dry deposition at 0.2 cm/s removes about 7 % of a parcel's mass per hour, so parcels fall below 1 % of their release mass within a few days.
+
+### Sanity check, not tuned against anything
+Simulated dry PM2.5 (sum over all tags) at the Delhi cell (77.21 E, 28.61 N; cell ix 112, iy 226) in the 100-parcel run. Directly emitted PM2.5 only, no background or secondary aerosol; nothing was adjusted in response to these numbers.
+
+| UTC | PM2.5 µg/m³ | top three tags |
+|---|---|---|
+| 11-03 00Z | 187.1 | industry_delhi_ncr 82.1, residential_delhi_ncr 53.8, fire_punjab 29.2 |
+| 11-03 06Z | 16.4 | industry_delhi_ncr 8.6, residential_delhi_ncr 5.7, fire_punjab 1.0 |
+| 11-03 12Z | 129.6 | residential_delhi_ncr 66.7, industry_delhi_ncr 36.3, fire_punjab 19.8 |
+| 11-05 00Z | 129.3 | fire_punjab 41.7, residential_delhi_ncr 37.1, industry_delhi_ncr 23.9 |
+| 11-06 00Z | 249.5 | residential_delhi_ncr 115.0, industry_delhi_ncr 86.0, fire_punjab 23.7 |
+| 11-08 23Z | 187.0 | industry_delhi_ncr 78.8, residential_delhi_ncr 53.0, fire_punjab 31.7 |
+
+Window mean 114.1 µg/m³; top contributors over the window: industry_delhi_ncr 48.3, residential_delhi_ncr 42.0, fire_punjab 8.3, industry_haryana 5.6, residential_haryana 2.9. The diurnal swing (night peaks, midday lows near 16-23 µg/m³) follows the mixing height. Vehicles do not reach the top three, consistent with EDGAR's small road-transport total (see the inventory caveats above).
