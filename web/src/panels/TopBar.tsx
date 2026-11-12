@@ -1,11 +1,12 @@
 /**
  * Top bar: product name, run date (a new date starts a new run; typed edits commit on Enter or
- * blur, picker choices at once), IST clock for the playhead,
- * layer chips, and weather readouts for the selected city (Delhi by default) at the playhead.
+ * blur, picker choices at once), IST clock for the playhead, the pollutant in view (PM2.5, PM10
+ * or coarse PM), layer chips (the plume as concentration or AQI, wind, fires, terrain), and weather readouts for the selected city (Delhi by default) at the playhead.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Layers } from "../state/store";
 import { DASH, compass16, fmtIST } from "../lib/format";
+import { COARSE_LONG, NO_COARSE_AQI, POLLUTANTS, POLLUTANT_INLINE, type Pollutant } from "../lib/pollutant";
 import { useApp, useAppStore } from "./storeContext";
 import { HourTag, cityOf } from "./ui";
 
@@ -18,6 +19,17 @@ export const DATE_NOTE =
 export const TERRAIN_NOTE =
   "3D relief is visual only; data layers are drawn flat and can appear offset from peaks when the map is tilted";
 const CALM_MS = 0.1;
+
+const POLLUTANT_CHIP: Record<Pollutant, { label: string; title: string }> = {
+  pm25: { label: "PM2.5", title: "Fine particles, up to 2.5 µm" },
+  pm10: { label: "PM10", title: "PM2.5 plus coarse PM: particles up to 10 µm" },
+  coarse: { label: "Coarse", title: `${COARSE_LONG} (PM10 minus PM2.5)` },
+};
+export const CONCENTRATION_CHIP = "µg/m³";
+/** The AQI chip's tooltip: what the mode shows, or why it is unavailable (coarse PM). */
+export function aqiChipNote(p: Pollutant): string {
+  return p === "coarse" ? NO_COARSE_AQI : `Hourly ${POLLUTANT_INLINE[p]} shown on the 24-hour AQI scale — indicative`;
+}
 
 /**
  * The wind readout. A finite direction gives "NW 11 km/h". Without one (null or NaN, the server's
@@ -95,9 +107,15 @@ function Readout({ label, value, id }: { label: string; value: string; id: strin
   );
 }
 
-function Chip({ label, on, onClick, title }: { label: string; on: boolean; onClick: () => void; title?: string }) {
+function Chip({ label, on, onClick, title, disabled }: {
+  label: string; on: boolean; onClick: () => void; title?: string; disabled?: boolean;
+}) {
   return (
-    <button type="button" className={`chip chip-btn${on ? " on" : ""}`} aria-pressed={on} onClick={onClick} title={title}>
+    <button
+      type="button" className={`chip chip-btn${on ? " on" : ""}`} aria-pressed={on} onClick={onClick} title={title}
+      // a disabled chip says why to assistive technology too, not only on hover
+      disabled={disabled} aria-description={disabled ? title : undefined}
+    >
       {label}
     </button>
   );
@@ -117,6 +135,7 @@ export function TopBar({ date: requested, onDate, actions }: TopBarProps) {
   const hour = useApp((s) => Math.floor(s.hour));
   const layers = useApp((s) => s.layers);
   const compare = useApp((s) => s.compareBaseline);
+  const pollutant = useApp((s) => s.pollutant);
   const selected = useApp((s) => s.selectedCity);
   const date = meta?.date ?? requested;
 
@@ -138,6 +157,10 @@ export function TopBar({ date: requested, onDate, actions }: TopBarProps) {
     s.setLayer(mode, !turnOff);
   };
   const toggle = (name: keyof Layers) => store.getState().setLayer(name, !layers[name]);
+  // coarse PM alone has no AQI: the AQI chip is disabled there and the plume is drawn as
+  // concentration (see plumeModeOf), so the concentration chip is the one that reads "on"
+  const noAqi = pollutant === "coarse";
+  const plumeOn = !compare && (layers.pm25 || layers.aqi);
 
   return (
     <header className="panel top" aria-label="Run and layers">
@@ -146,10 +169,17 @@ export function TopBar({ date: requested, onDate, actions }: TopBarProps) {
       <div className="chip clock num" data-testid="ist-clock">
         {meta ? fmtIST(meta.hours[hour]) : DASH} <HourTag />
       </div>
+      <div className="chip-group joined" role="group" aria-label="Pollutant">
+        {POLLUTANTS.map((p) => (
+          <Chip key={p} label={POLLUTANT_CHIP[p].label} title={POLLUTANT_CHIP[p].title} on={pollutant === p}
+            onClick={() => store.getState().setPollutant(p)} />
+        ))}
+      </div>
       <div className="chip-group" role="group" aria-label="Layers">
-        <Chip label="PM2.5" on={layers.pm25 && !layers.aqi && !compare} onClick={() => plume("pm25")} />
-        <Chip label="AQI" on={layers.aqi && !compare} onClick={() => plume("aqi")}
-          title="Hourly PM2.5 shown on the 24-hour AQI scale — indicative" />
+        <Chip label={CONCENTRATION_CHIP} on={plumeOn && (noAqi || !layers.aqi)} onClick={() => plume("pm25")}
+          title={`${POLLUTANT_CHIP[pollutant].label} concentration plume`} />
+        <Chip label="AQI" on={plumeOn && layers.aqi && !noAqi} onClick={() => plume("aqi")} disabled={noAqi}
+          title={aqiChipNote(pollutant)} />
         <Chip label="Wind" on={layers.wind} onClick={() => toggle("wind")} />
         <Chip label="Fires" on={layers.fires} onClick={() => toggle("fires")} />
         <Chip label="Terrain 3D" on={layers.terrain} onClick={() => toggle("terrain")} title={TERRAIN_NOTE} />

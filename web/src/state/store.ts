@@ -9,8 +9,9 @@ import { create } from "zustand";
 import { ApiClient, ApiError, errorMessage, isAbort } from "../api/client";
 import { HAZE } from "../api/decode";
 import { FrameCache } from "../api/frameCache";
-import type { Fire, Meta, Sector, SourceRequest } from "../api/types";
+import type { DataPollutant, Fire, Meta, Sector, SourceRequest } from "../api/types";
 import type { Weights } from "../lib/compose";
+import type { Pollutant } from "../lib/pollutant";
 import { useDropStore } from "../map/dropStore";
 import { initialHour } from "../panels/initialHour";
 import {
@@ -30,6 +31,7 @@ export const REBUILD_LOOP = "The run keeps being rebuilt on the server; start th
 export const RUN_LOST = "run not found; start again";
 
 export interface Layers {
+  /** The concentration plume of the selected pollutant (the name predates PM10). */
   pm25: boolean;
   aqi: boolean;
   wind: boolean;
@@ -58,6 +60,25 @@ export interface CityDataState {
 export const IDLE_CITY_DATA: CityDataState = {
   status: "idle", values: null, stationCount: null, error: null,
 };
+
+/** The per-city side data, one map per (source, pollutant): the state keys they live under. */
+export type CityDataKey = "measured" | "cams" | "measuredPm10" | "camsPm10";
+const CITY_DATA_KEYS: readonly CityDataKey[] = ["measured", "cams", "measuredPm10", "camsPm10"];
+const NO_CITY_DATA: Record<CityDataKey, Record<string, CityDataState>> = {
+  measured: {}, cams: {}, measuredPm10: {}, camsPm10: {},
+};
+
+/**
+ * What a city panel needs for the pollutant in view. CPCB PM2.5 is always wanted (the PM2.5 view
+ * itself; in the PM10 and coarse views it is half of "measured coarse = PM10 − PM2.5"). CPCB PM10
+ * joins outside the PM2.5 view. CAMS is fetched for the pollutant in view; there is no CAMS
+ * series for coarse PM alone.
+ */
+export function cityDataNeeds(pollutant: Pollutant): CityDataKey[] {
+  if (pollutant === "pm25") return ["measured", "cams"];
+  if (pollutant === "pm10") return ["measured", "measuredPm10", "camsPm10"];
+  return ["measured", "measuredPm10"];
+}
 
 /**
  * The playhead for a new build of the same date: the same instant (`hours[floor(h)]`, keeping the
@@ -88,6 +109,8 @@ export interface AppState {
   speed: Speed;
 
   layers: Layers;
+  /** Which particles the map and the city panel show (see lib/pollutant.ts). */
+  pollutant: Pollutant;
   sliders: Sliders;
   fireScaling: number;
   firesContinue: boolean;
@@ -96,8 +119,12 @@ export interface AppState {
   selectedCity: string | null;
   compareBaseline: boolean;
 
+  /** CPCB and CAMS PM2.5 by city id. */
   measured: Record<string, CityDataState>;
   cams: Record<string, CityDataState>;
+  /** The same for PM10 (`?pollutant=pm10`), fetched only when a view needs it. */
+  measuredPm10: Record<string, CityDataState>;
+  camsPm10: Record<string, CityDataState>;
 
   /** Bumped whenever the frame cache changes, so views know to recompose. */
   frameVersion: number;
@@ -118,6 +145,8 @@ export interface AppState {
   setSpeed: (s: Speed) => void;
   tick: (dtSeconds: number) => void;
   setLayer: (name: keyof Layers, on: boolean) => void;
+  /** Switch the pollutant in view; loads the selected city's data that the new view needs. */
+  setPollutant: (p: Pollutant) => void;
   setSlider: (sector: Sector, value: number) => void;
   setFireScaling: (v: number) => void;
   setFiresContinue: (on: boolean) => void;
@@ -267,7 +296,7 @@ export function createAppStore(deps: StoreDeps = {}) {
             abortCity();
             const old = get();
             const hadSources = old.userSources.length > 0;
-            set({ hour: remapHour(old.meta?.hours, old.hour, meta), measured: {}, cams: {} });
+            set({ hour: remapHour(old.meta?.hours, old.hour, meta), ...NO_CITY_DATA });
             applyMeta(meta, false);
             // a pending drop dialog's start hour indexes the old window: close it
             const drop = useDropStore.getState();
@@ -341,7 +370,7 @@ export function createAppStore(deps: StoreDeps = {}) {
 
     // --- per-city measured / CAMS ---
 
-    const setCityData = (kind: "measured" | "cams", id: string, data: CityDataState) =>
+    const setCityData = (kind: CityDataKey, id: string, data: CityDataState) =>
       set((s) => ({ [kind]: { ...s[kind], [id]: data } }) as Pick<AppState, typeof kind>);
 
     /** Back out of loading states when a city's requests are abandoned. */
@@ -349,7 +378,7 @@ export function createAppStore(deps: StoreDeps = {}) {
       set((s) => {
         const undo = (m: Record<string, CityDataState>) =>
           Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.status === "loading" ? IDLE_CITY_DATA : v]));
-        return { measured: undo(s.measured), cams: undo(s.cams) };
+        return Object.fromEntries(CITY_DATA_KEYS.map((k) => [k, undo(s[k])])) as Pick<AppState, CityDataKey>;
       });
 
     function abortCity() {
@@ -364,26 +393,28 @@ export function createAppStore(deps: StoreDeps = {}) {
       if (!cityAbort) cityAbort = new AbortController();
       const controller = cityAbort;
       const live = () => cityAbort === controller && !controller.signal.aborted;
-      const needs = (kind: "measured" | "cams") => {
+      // each (source, pollutant) pair has its own map, so an answer can never land under the
+      // wrong pollutant; what is already loaded or loading is not asked for again
+      for (const kind of cityDataNeeds(get().pollutant)) {
         const st = get()[kind][id]?.status ?? "idle";
-        return st === "idle" || st === "error";
-      };
-
-      if (needs("measured")) {
-        setCityData("measured", id, { ...IDLE_CITY_DATA, status: "loading" });
-        client.getMeasured(runId, id, controller.signal).then(
-          (r) =>
-            live() &&
-            setCityData("measured", id, { status: "ready", values: r.values, stationCount: r.station_count, error: null }),
-          (e) => live() && setCityData("measured", id, { ...IDLE_CITY_DATA, status: "error", error: errorMessage(e) }),
-        );
-      }
-      if (needs("cams")) {
-        setCityData("cams", id, { ...IDLE_CITY_DATA, status: "loading" });
-        client.getCams(runId, id, controller.signal).then(
-          (r) => live() && setCityData("cams", id, { ...IDLE_CITY_DATA, status: "ready", values: r.values }),
-          (e) => live() && setCityData("cams", id, { ...IDLE_CITY_DATA, status: "error", error: errorMessage(e) }),
-        );
+        if (st !== "idle" && st !== "error") continue;
+        const pollutant: DataPollutant = kind === "measuredPm10" || kind === "camsPm10" ? "pm10" : "pm25";
+        const failed = (e: unknown) =>
+          live() && setCityData(kind, id, { ...IDLE_CITY_DATA, status: "error", error: errorMessage(e) });
+        setCityData(kind, id, { ...IDLE_CITY_DATA, status: "loading" });
+        if (kind === "measured" || kind === "measuredPm10") {
+          client.getMeasured(runId, id, controller.signal, pollutant).then(
+            (r) =>
+              live() &&
+              setCityData(kind, id, { status: "ready", values: r.values, stationCount: r.station_count, error: null }),
+            failed,
+          );
+        } else {
+          client.getCams(runId, id, controller.signal, pollutant).then(
+            (r) => live() && setCityData(kind, id, { ...IDLE_CITY_DATA, status: "ready", values: r.values }),
+            failed,
+          );
+        }
       }
     }
 
@@ -392,9 +423,10 @@ export function createAppStore(deps: StoreDeps = {}) {
       meta: null, fires: null, firesError: null,
       hour: 0, playing: false, speed: 1,
       layers: { pm25: true, aqi: false, wind: true, fires: true, terrain: false },
+      pollutant: "pm25",
       sliders: { ...DEFAULT_SLIDERS }, fireScaling: 1, firesContinue: true,
       regionScenario: { ...NO_SCENARIO }, userSources: [], selectedCity: null, compareBaseline: false,
-      measured: {}, cams: {}, frameVersion: 0, frameError: null, frameFailures: 0, sourceError: null, notice: null,
+      ...NO_CITY_DATA, frameVersion: 0, frameError: null, frameFailures: 0, sourceError: null, notice: null,
 
       startRun: async (date) => {
         const token = ++runToken;
@@ -409,7 +441,7 @@ export function createAppStore(deps: StoreDeps = {}) {
           meta: null, fires: null, firesError: null, hour: 0, playing: false,
           sliders: { ...DEFAULT_SLIDERS }, fireScaling: 1, firesContinue: true,
           regionScenario: { ...NO_SCENARIO }, userSources: [], compareBaseline: false,
-          measured: {}, cams: {}, frameError: null, sourceError: null, notice: null,
+          ...NO_CITY_DATA, frameError: null, sourceError: null, notice: null,
         });
         try {
           const res = await client.postRun(date, controller.signal);
@@ -456,6 +488,12 @@ export function createAppStore(deps: StoreDeps = {}) {
       },
 
       setLayer: (name, on) => set((s) => ({ layers: { ...s.layers, [name]: on } })),
+      setPollutant: (pollutant) => {
+        if (pollutant === get().pollutant) return;
+        set({ pollutant });
+        const city = get().selectedCity;
+        if (city) fetchCityData(city);
+      },
       setSlider: (sector, value) =>
         set((s) => ({ sliders: { ...s.sliders, [sector]: clamp(value, SLIDER_RANGE.min, SLIDER_RANGE.max) } })),
       setFireScaling: (v) => set({ fireScaling: clamp(v, FIRE_SCALING_RANGE.min, FIRE_SCALING_RANGE.max) }),
@@ -488,7 +526,7 @@ export function createAppStore(deps: StoreDeps = {}) {
             return series && !series.every((v) => v === 0) ? { ...c, by_tag: { ...c.by_tag, [id]: series } } : c;
           });
           set((s) => ({
-            meta: { ...meta, cities, tags: [...meta.tags, { id, kind: "user", sector: null, region: null, label, color, source: req }] },
+            meta: { ...meta, cities, tags: [...meta.tags, { id, kind: "user", sector: null, region: null, label, color, size: "fine", source: req }] },
             userSources: [...s.userSources, { id, label, color, enabled: true, spec: req }],
           }));
           frames.setExtras(enabledUserTags());

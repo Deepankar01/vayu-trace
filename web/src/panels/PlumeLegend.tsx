@@ -1,10 +1,12 @@
 /**
- * Small map legend for the plume: the PM2.5 ramp, the six CPCB categories (AQI mode, indicative:
+ * Small map legend for the plume of the pollutant in view: the concentration ramp (one µg/m³ scale
+ * for PM2.5, PM10 and coarse PM), the six CPCB categories (AQI mode, indicative:
  * hourly values on the 24-hour scale) or the diverging difference from baseline. Every colour has
- * a text label next to it.
+ * a text label next to it. Coarse PM has no AQI: with the AQI mode on, the ramp is shown and says so.
  */
 import { AQI_BANDS, pm25Ramp } from "../lib/colors";
 import { MINUS } from "../lib/format";
+import { COARSE_LONG, NO_COARSE_AQI, POLLUTANT_LABEL, type Pollutant } from "../lib/pollutant";
 import { useApp } from "./storeContext";
 
 const PM_TICKS = [5, 60, 120, 250, 400];
@@ -22,50 +24,56 @@ function rampGradient(): string {
 }
 const RAMP = rampGradient();
 export const CITY_NOTE = "City labels and markers: simulated";
-const Note = () => <div className="lg-note mute" data-testid="legend-note">{CITY_NOTE}</div>;
+/** The city labels stay PM2.5-based in every view; outside the PM2.5 view the note says so. */
+export const cityNote = (p: Pollutant) => (p === "pm25" ? CITY_NOTE : `${CITY_NOTE} PM2.5-based AQI`);
+const Note = ({ p }: { p: Pollutant }) => <div className="lg-note mute" data-testid="legend-note">{cityNote(p)}</div>;
 
 export function PlumeLegend() {
   const compare = useApp((s) => s.compareBaseline);
   const aqi = useApp((s) => s.layers.aqi);
   const pm25 = useApp((s) => s.layers.pm25);
+  const pollutant = useApp((s) => s.pollutant);
   const ready = useApp((s) => s.meta !== null);
   if (!ready) return null;
+  const name = POLLUTANT_LABEL[pollutant];
+  const noAqi = pollutant === "coarse";
 
   if (compare) {
     return (
       <div className="panel legend-box" aria-label="Plume legend">
-        <div className="lg-title">Difference from baseline · PM2.5 µg/m³</div>
+        <div className="lg-title">Difference from baseline · {name} µg/m³</div>
         <div className="lg-bar" style={{ background: "linear-gradient(90deg, #6aa8ff, rgba(106,168,255,0) 48%, rgba(255,90,90,0) 52%, #ff5a5a)" }} />
         <div className="lg-ticks num">
           <span>{MINUS}{DIFF_SAT}</span><span>±{DIFF_DEAD}</span><span>+{DIFF_SAT}</span>
         </div>
         <div className="lg-ticks small"><span className="cool">lower than baseline</span><span className="warm">higher</span></div>
-        <Note />
+        <Note p={pollutant} />
       </div>
     );
   }
-  if (aqi) {
+  if (aqi && !noAqi) {
     return (
       <div className="panel legend-box" aria-label="Plume legend">
-        <div className="lg-title" title="Hourly PM2.5 shown on the 24-hour AQI scale — indicative">AQI (PM2.5-based) · indicative</div>
+        <div className="lg-title" title={`Hourly ${name} shown on the 24-hour AQI scale — indicative`}>AQI ({name}-based) · indicative</div>
         <ul className="lg-cats">
           {AQI_BANDS.map((b) => (
             <li key={b.name}><i style={{ background: b.color }} />{b.name}</li>
           ))}
         </ul>
-        <Note />
+        <Note p={pollutant} />
       </div>
     );
   }
-  if (!pm25) return null;
+  if (!pm25 && !aqi) return null;
   return (
     <div className="panel legend-box" aria-label="Plume legend">
-      <div className="lg-title">PM2.5 · µg/m³ (simulated)</div>
+      <div className="lg-title">{noAqi ? COARSE_LONG : name} · µg/m³ (simulated)</div>
       <div className="lg-bar" style={{ background: RAMP }} />
       <div className="lg-ticks num pm">
         {PM_TICKS.map((t) => <span key={t} style={{ left: `${((t - 5) / 395) * 100}%` }}>{t}</span>)}
       </div>
-      <Note />
+      {noAqi && aqi && <div className="lg-note mute" data-testid="legend-no-aqi">{NO_COARSE_AQI}; showing concentration</div>}
+      <Note p={pollutant} />
     </div>
   );
 }

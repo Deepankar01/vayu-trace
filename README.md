@@ -1,6 +1,6 @@
-# Vayu Trace: India PM2.5 transport simulator
+# Vayu Trace: India PM2.5 and PM10 transport simulator
 
-Vayu Trace replays how fine particulate pollution (PM2.5) moves across India hour by hour. For a chosen date it releases emissions from satellite-detected fires and from a gridded emission inventory into real weather, carries them with the wind, and shows on a map where each city's simulated PM2.5 came from, by what path and how long it took to arrive. For today's date the run continues through the next two days as a forecast.
+Vayu Trace replays how particulate pollution (PM2.5, and the coarser part of PM10) moves across India hour by hour. For a chosen date it releases emissions from satellite-detected fires and from a gridded emission inventory into real weather, carries them with the wind, and shows on a map where each city's simulated PM2.5 or PM10 came from, how much was made in the city itself and how much arrived, by what path and how long it took. For today's date the run continues through the next two days as a forecast.
 
 It is a demonstration for atmospheric researchers. The simulated values are always shown next to government (CPCB) measurements and the Copernicus (CAMS) model so the error is visible, and the model's limits are stated rather than hidden. It runs locally on a laptop; there is no hosting, account or authentication.
 
@@ -12,7 +12,7 @@ Requirements: [uv](https://docs.astral.sh/uv/) (Python 3.12 is installed by uv),
    - `FIRMS_MAP_KEY`: NASA FIRMS map key (fire detections)
    - `OPENAQ_API_KEY`: OpenAQ v3 key (CPCB measurements)
    - `DATA_GOV_IN_API_KEY`: data.gov.in key (live CPCB feed; optional, the app does not use the live feed, see Data sources)
-2. `make setup`: installs the Python and web dependencies and downloads the EDGAR emission inventory (nine files, about 220 MB in total once extracted, each checked against a SHA-256 digest) if it is not there yet.
+2. `make setup`: installs the Python and web dependencies and downloads the EDGAR emission inventory (eighteen files, about 450 MB in total once extracted, each checked against a SHA-256 digest) if it is not there yet.
 3. `make dev`: starts the API (port 8000) and the web app (port 5173) together and prints the address. Ctrl-C stops both. Other ports: `make dev API_PORT=8010 WEB_PORT=5183`.
 4. Open http://localhost:5173. The first run of a date takes one to a few minutes (about a minute when the upstream data is already cached; weather download and simulation, with a progress bar); after that the stored run is reused while it is valid: a run is reused if it was final when it was made (it was simulated at least 10 days after its window ended, which in practice means the date was about 13 days old or more at the time: the window ends 3 days after the date and upstream data is treated as final 10 days later) or if it is less than an hour old; otherwise opening the date simulates it again (about a minute). Stored runs are also discarded and re-simulated on next open whenever the model settings they were made with differ from the current ones (any model constant, the city list, or the receptor logic version). Pick another date with `?date=YYYY-MM-DD` or the date field.
 
@@ -26,6 +26,8 @@ Other targets: `make test` (server and web test suites), `make validate` (the va
 - **Drop a source**: click the map to add traffic, a construction site, a fireworks event or a custom source for a chosen period. The server simulates that source alone (a few seconds) and it joins the plume and the city breakdowns; it can be switched off or removed.
 - **Compare with baseline**: show the difference your changes make against the unmodified run.
 - **City breakdown**: click a city for simulated PM2.5 and AQI next to CPCB measurements and CAMS, the share from each source and region, "Not explained by model" (measured minus simulated), the travel path of the air (a back-trajectory along the mean wind for up to 72 hours, shorter early in the window because weather data starts 48 hours before it; stopped by terrain above the mixed layer) and smoke age and arrival times.
+- **PM2.5, PM10 or coarse**: a switch in the top bar shows PM2.5, PM10 (PM2.5 plus the coarse 2.5–10 µm part) or the coarse part alone on the map and in the city panel. Coarse particles deposit five times faster in the model, so their plumes stay closer to their sources; flipping between PM2.5 and Coarse shows the difference.
+- **Made here vs arrived**: for each city, how much of the simulated pollution was emitted inside the city's own ~30 km square and how much came from outside, for the pollutant in view, with the made-here share of PM2.5 and of coarse PM side by side. In the PM10 and coarse views the panel also shows measured coarse PM (CPCB PM10 minus PM2.5) beside the model's; it is shown for comparison and never used to adjust the model.
 - **Validation**: the "Validation" button shows the model and CAMS against CPCB measurements for a reference episode (see below).
 
 ## How it works
@@ -44,9 +46,11 @@ Each physical constant in `server/vayu/constants.py` is either cited or explicit
 
 - **Fires**: NASA FIRMS, VIIRS active fire detections (S-NPP, NOAA-20, NOAA-21), fire radiative power. NASA data, free to use with acknowledgement of FIRMS (https://firms.modaps.eosdis.nasa.gov).
 - **Weather and forecast**: Open-Meteo (https://open-meteo.com), historical (reanalysis) archive and forecast APIs; Open-Meteo data are offered under CC BY 4.0 with attribution to Open-Meteo.
-- **CAMS PM2.5**: Copernicus Atmosphere Monitoring Service, via the Open-Meteo air-quality API. Contains modified Copernicus Atmosphere Monitoring Service information.
-- **Measurements**: CPCB (Central Pollution Control Board) PM2.5 through OpenAQ (https://openaq.org), hourly history. A client for the live CPCB feed on data.gov.in (Government Open Data License - India) is implemented but disabled in the UI, because the service was unavailable during development and its schema could not be verified.
-- **Emissions**: EDGAR v8.1 air pollutants, European Commission JRC, https://edgar.jrc.ec.europa.eu/dataset_ap81, CC BY 4.0. Gridded 2022 PM2.5 for nine sectors, mapped to vehicles, industry and power, and residential; changes: regridded to the model domain, cropped to India and converted to kg per hour. Details in `docs/data-notes.md`.
+- **CAMS PM2.5 and PM10**: Copernicus Atmosphere Monitoring Service, via the Open-Meteo air-quality API. Contains modified Copernicus Atmosphere Monitoring Service information.
+- **Measurements**: CPCB (Central Pollution Control Board) PM2.5 and PM10 through OpenAQ (https://openaq.org), hourly history. A client for the live CPCB feed on data.gov.in (Government Open Data License - India) is implemented but disabled in the UI, because the service was unavailable during development and its schema could not be verified.
+- **Emissions**: EDGAR v8.1 air pollutants, European Commission JRC, https://edgar.jrc.ec.europa.eu/dataset_ap81, CC BY 4.0. Gridded 2022 PM2.5 and PM10 for nine sectors (coarse = PM10 minus PM2.5), mapped to vehicles, industry and power, and residential; changes: regridded to the model domain, cropped to India and converted to kg per hour. Details in `docs/data-notes.md`.
+- **Dust estimate**: national road dust and construction totals from TERI, "Development of spatially resolved air pollution emission inventory of India" (base year 2016, Executive Summary Table S2), https://www.teriin.org/sites/default/files/files/ap-Executive-Summary.pdf. Used as totals only; the spatial pattern is this project's assumption.
+- **Coarse smoke fraction**: Andreae 2019, Atmos. Chem. Phys. 19, 8523-8546, Table 1.
 - **Terrain**: Terrarium elevation tiles from the AWS Terrain Tiles open dataset (Mapzen/Tilezen; sources include SRTM, GMTED and ETOPO1).
 - **Basemap**: CARTO Dark Matter, © CARTO, © OpenStreetMap contributors (ODbL).
 - **India boundary**: state polygons from the third-party repository datta07/INDIAN-SHAPEFILES (MIT licence), believed to follow the official Government of India depiction (Jammu and Kashmir including PoK, Ladakh including Aksai Chin, Arunachal Pradesh in full) and checked by inspection, not by any official certification. The upstream README says some data reflects 2019 boundaries; the outline is simplified to about 1 km and is not suitable for legal use. Drawn over the basemap, whose own boundaries are not relied on.
@@ -56,7 +60,8 @@ Each physical constant in `server/vayu/constants.py` is either cited or explicit
 - **Secondary aerosol.** Nitrate, sulphate and secondary organic aerosol formed in the air are not simulated. In a north-Indian winter they are a large part of measured PM2.5, so simulated values are expected to read low.
 - **Inflow from outside India (partly).** Satellite-detected fires anywhere in the map domain (66–98°E, 6–38°N), including Pakistan, Nepal and Bangladesh, ARE simulated and appear under "Fires (satellite) — other states and neighbouring countries". Anthropogenic inventory emissions (vehicles, industry, residential) outside India are NOT simulated, including Pakistani Punjab (upwind of Delhi in winter), Nepal and Bangladesh. Fires in the "other" group use the generic vegetation emission factor, not the crop-residue factor; for crop-residue fires in Pakistani Punjab this is a known approximation.
 - **Vertical structure and chemistry.** One well-mixed layer only; no chemistry.
-- **Dust baseline.** No usable gridded road and construction dust inventory was available, so its baseline is zero; dust enters only through dropped sources. About 30 % of the vehicles sector is resuspended road dust as reported by EDGAR.
+- **Dust is an estimate, not data.** No usable gridded road and construction dust inventory was available. The dust source is built from national totals (TERI, base year 2016: road dust and construction) spread over India in proportion to EDGAR road-transport emissions, at a constant rate. Its location pattern, year and lack of any daily or seasonal cycle are assumptions; the app marks it "estimated" and the dust slider at 0 % removes it. Details in `docs/data-notes.md`.
+- **Coarse particles are simplified.** The 2.5–10 µm part of PM10 differs from PM2.5 in the model only by a faster deposition velocity (1 cm/s against 0.2 cm/s, a chosen value). One velocity stands for the whole size range, the mixed layer has no near-ground gradient, and wind-blown soil and desert dust are not simulated.
 - **Fire under-detection.** Satellites miss small and short-lived fires and fires under cloud or smoke; the fire scaling slider (default 1, no correction) is there for this.
 - **Night fires** seen only at night are taken at their observed fire radiative power without scaling up to a daytime peak, so they are under-counted by design.
 - **Emission timing.** Inventory emissions are annual means: no daily, weekly or seasonal profile (for example winter heating).
@@ -66,22 +71,27 @@ Each physical constant in `server/vayu/constants.py` is either cited or explicit
 
 ## Validation
 
-`make validate` compares the model with CPCB measurements at the 28 northern cities (Delhi to Muzaffarpur) for 2025-11-03 to 2025-11-09, hourly, at default weights, and writes `docs/validation/2025-11.md` and the data behind the in-app Validation dialog. CAMS is compared over the same hours as the model. Headline numbers:
+`make validate` compares the model with CPCB measurements at the 28 northern cities (Delhi to Muzaffarpur) for 2025-11-03 to 2025-11-09, hourly, at default weights, and writes `docs/validation/2025-11.md` and the data behind the in-app Validation dialog. CAMS is compared over the same hours as the model. `make validate EPISODE="2025-11-03 2025-11-09 --pollutant pm10"` does the same for PM10 and writes `docs/validation/2025-11-pm10.md`. Headline numbers:
 
 | | n | NMB | FAC2 | pooled r | median per-city r |
 |---|---|---|---|---|---|
-| All 28 cities, model | 4094 | -0.62 | 0.30 | 0.24 | 0.18 |
-| All 28 cities, CAMS | 4094 | -0.29 | 0.72 | 0.20 | 0.38 |
-| Delhi NCR (5 cities), model | 745 | -0.50 | 0.38 | 0.02 | 0.06 |
-| Delhi NCR (5 cities), CAMS | 745 | -0.52 | 0.57 | 0.12 | 0.29 |
+| PM2.5, all 28 cities, model | 4094 | -0.59 | 0.33 | 0.23 | 0.16 |
+| PM2.5, all 28 cities, CAMS | 4094 | -0.29 | 0.72 | 0.20 | 0.38 |
+| PM2.5, Delhi NCR (5 cities), model | 745 | -0.47 | 0.41 | 0.02 | 0.07 |
+| PM2.5, Delhi NCR (5 cities), CAMS | 745 | -0.52 | 0.57 | 0.12 | 0.29 |
+| PM10, all 28 cities, model | 4092 | -0.68 | 0.22 | 0.25 | 0.21 |
+| PM10, all 28 cities, CAMS | 4092 | -0.14 | 0.65 | 0.25 | 0.20 |
+| PM10, Delhi NCR (5 cities), model | 745 | -0.50 | 0.40 | 0.01 | 0.21 |
+| PM10, Delhi NCR (5 cities), CAMS | 745 | -0.23 | 0.78 | 0.10 | 0.21 |
 
-- The model reads low: pooled NMB -0.62 (mean 34 against 90 µg/m³ measured), lower than measured in 27 of 28 cities, by day and at night.
-- About 30 % of the model's hours are within a factor of two of the measurement, against 72 % for CAMS.
-- Hour-to-hour agreement with measurements is weak for both: the median per-city r is 0.18 for the model and 0.38 for CAMS.
-- CAMS is closer in level (pooled NMB -0.29). In Delhi NCR both read low by about half.
-- Pooled r is a correlation across all city-hours and includes differences between cities. The pooled r difference between model and CAMS is not a meaningful ranking; the model's r exceeds CAMS's in 4 of 28 cities.
+- The model reads low for both. PM2.5: pooled NMB -0.59 (mean 37 against 90 µg/m³ measured), below measured in 27 of 28 cities. PM10: pooled NMB -0.68 (mean 54 against 171 µg/m³), below measured in all 28.
+- About a third of the model's PM2.5 hours and about a fifth of its PM10 hours are within a factor of two of the measurement, against 72 % and 65 % for CAMS.
+- Hour-to-hour agreement with measurements is weak for both models: median per-city r for PM2.5 is 0.16 (model) and 0.38 (CAMS); for PM10 it is 0.21 and 0.20.
+- CAMS is closer in level. In Delhi NCR the model reads low by about half for both pollutants.
+- Pooled r is a correlation across all city-hours and includes differences between cities, so it is not a meaningful ranking. The model's r exceeds CAMS's in 4 of 28 cities for PM2.5 and 11 of 28 for PM10.
+- The PM2.5 figures include the estimated dust source (it adds PM2.5 too); before it was added the pooled PM2.5 NMB was -0.62 and FAC2 0.30. The PM10 figures test that dust estimate as much as the transport.
 
-No parameter was fitted to these measurements. The full tables, method and reading are in [docs/validation/2025-11.md](docs/validation/2025-11.md).
+No parameter was fitted to these measurements. The full tables, method and reading are in [docs/validation/2025-11.md](docs/validation/2025-11.md) and [docs/validation/2025-11-pm10.md](docs/validation/2025-11-pm10.md).
 
 ## Known limitations of the app
 
@@ -91,7 +101,7 @@ No parameter was fitted to these measurements. The full tables, method and readi
 - **Storage.** Everything is stored under `server/data/` (git-ignored), which grows without bound and can be deleted safely at any time (stop the server first):
   - `runs/`: stored runs, about 200 MB each (one current run per date, plus superseded runs kept for two hours). `rm -rf server/data/runs` frees most space; dates are simulated again when opened.
   - `cache/`: upstream responses (FIRMS fires, Open-Meteo weather and CAMS, OpenAQ measurements, terrain tiles and the terrain grid), a few hundred MB after a handful of dates. Deleting it means downloading again.
-  - `inventory/`: the EDGAR inventory and its converted grids, about 220 MB; `make setup` downloads it again.
+  - `inventory/`: the EDGAR inventory and its converted grids, about 450 MB; `make setup` downloads it again.
   - `validation.json`: the Validation dialog's data; `make validate` writes it again.
 
 ## Project layout

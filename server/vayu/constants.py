@@ -55,6 +55,14 @@ BIOMASS_KG_PER_MJ = 0.368
 EF_PM25_CROP_G_PER_KG = 6.26
 EF_PM25_VEG_G_PER_KG = 7.17
 
+# Coarse smoke (2.5-10 um) emitted per unit PM2.5, by fuel class: (TPM - PM2.5) / PM2.5 from
+# Andreae 2019, Atmos. Chem. Phys. 19, 8523-8546, Table 1 (g/kg dry matter; values read from the
+# paper): agricultural residues PM2.5 8.2, TPM 12.9 -> 4.7 / 8.2; savanna and grassland PM2.5
+# 6.7, TPM 8.7 -> 2.0 / 6.7. Andreae groups PM10 and total particulate data in the TPM row, so
+# these are upper bounds on the 2.5-10 um fraction. Applied to the Akagi PM2.5 factors above.
+FIRE_COARSE_PER_PM25_CROP = 4.7 / 8.2
+FIRE_COARSE_PER_PM25_VEG = 2.0 / 6.7
+
 # States whose fires are treated as crop-residue burning (north-Indian stubble burning belt).
 CROP_STATES = ("punjab", "haryana", "uttar_pradesh", "madhya_pradesh")
 
@@ -88,6 +96,17 @@ K_H_M2_S = 3000
 # Atmos. Environ. 35, 549-560; Seinfeld & Pandis, Atmospheric Chemistry and Physics); that range is
 # not re-verified here. Not fitted.
 V_DEP_M_S = 0.002
+
+# Dry deposition velocity of coarse particles (2.5-10 um aerodynamic diameter), m/s, including
+# gravitational settling. 1 cm/s is a chosen value: Stokes settling alone is about 0.1 cm/s at
+# 6 um and 0.3 cm/s at 10 um (unit density; Seinfeld & Pandis, Atmospheric Chemistry and Physics,
+# ch. 9), and impaction on rough (urban, vegetated) surfaces raises the total; published coarse-mode
+# deposition velocities span roughly 0.3-3 cm/s (Zhang et al. 2001, Atmos. Environ. 35, 549-560).
+# That range is quoted from general knowledge and not re-verified here. Not fitted. It is five
+# times V_DEP_M_S, so a coarse parcel's airborne lifetime in a given mixed layer is one fifth of
+# a fine parcel's. The same washout coefficients are used for both sizes (a simplification:
+# rain removes coarse particles more efficiently).
+V_DEP_COARSE_M_S = 0.01
 
 # Below-cloud scavenging (washout) coefficient for particles, Lambda = WASHOUT_A * P**WASHOUT_B
 # (1/s, P = precipitation rate in mm/h): the Lambda = A * P**B form used in FLEXPART (Stohl et al.
@@ -132,3 +151,16 @@ KERNEL_HALF_WIDTH = (0, 1, 2)
 # Total fire-attributed PM2.5 (µg/m³) at a city above which "smoke has arrived" is shown. A display
 # threshold chosen for the demo (one value for all cities), not a physical constant and not fitted.
 FIRE_ARRIVAL_UGM3 = 15.0
+
+# --- Road and construction dust estimate (vayu.emissions.inventory) ---
+
+# National dust emissions for India, Gg (kt) per year, base year 2016: TERI, "Development of
+# spatially resolved air pollution emission inventory of India", Executive Summary, Table S2
+# (values read from the report): road dust PM10 1001, PM2.5 242; construction PM10 3291,
+# PM2.5 197. These are national totals from one inventory for one year; they are NOT gridded
+# data. The model spreads them over India in proportion to EDGAR road-transport emissions (an
+# assumed spatial proxy), at a constant rate. Not fitted to any measurement.
+DUST_ROAD_PM10_KT = 1001.0
+DUST_ROAD_PM25_KT = 242.0
+DUST_CONSTRUCTION_PM10_KT = 3291.0
+DUST_CONSTRUCTION_PM25_KT = 197.0

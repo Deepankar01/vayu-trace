@@ -4,14 +4,15 @@ import type { CityMeta } from "../api/types";
 import { IDLE_CITY_DATA } from "../state/store";
 import { makeMeta } from "../test-utils/meta";
 import { flat, measuredReady, renderPanel } from "../test-utils/panels";
-import { CityPanel } from "./CityPanel";
+import { CityPanel, MODEL_SCOPE_NOTE_COARSE } from "./CityPanel";
+import { cityView, coarseMeasured } from "./cityView";
 
 const N = 30;
 const H = 20;
 
 function delhi(byTag: Record<string, (number | null)[]>, over: Partial<CityMeta> = {}): CityMeta {
   return {
-    id: "delhi", name: "Delhi", lat: 28.6, lon: 77.2, region: "delhi_ncr", by_tag: byTag,
+    id: "delhi", name: "Delhi", lat: 28.6, lon: 77.2, region: "delhi_ncr", by_tag: byTag, by_tag_local: {},
     fire_age_h: flat(N, 17),
     met: { wind_ms: flat(N, 3), wind_dir_deg: flat(N, 315), rh: flat(N, 0.68), temp_c: flat(N, 19), blh_m: flat(N, 310) },
     ...over,
@@ -232,10 +233,11 @@ describe("CityPanel", () => {
     expect(screen.queryAllByTestId("hour-tag")).toHaveLength(0);
     act(() => store.getState().setHour(20));
     const tags = screen.getAllByTestId("hour-tag");
-    expect(tags.map((t) => t.textContent)).toEqual(["fires assumed", "fires assumed"]);
+    // header, breakdown title, made-here title
+    expect(tags.map((t) => t.textContent)).toEqual(["fires assumed", "fires assumed", "fires assumed"]);
     expect(within(screen.getByTestId("breakdown-title")).getByTestId("hour-tag")).toBeInTheDocument();
     act(() => store.getState().setHour(25));
-    expect(screen.getAllByTestId("hour-tag").map((t) => t.textContent)).toEqual(["forecast", "forecast"]);
+    expect(screen.getAllByTestId("hour-tag").map((t) => t.textContent)).toEqual(["forecast", "forecast", "forecast"]);
   });
 
   it("labels the 24 h mean beside the category and the hourly value beneath", () => {
@@ -260,5 +262,204 @@ describe("CityPanel", () => {
     setup(sim100, flat(N, 160));
     expect(screen.getByRole("img", { name: /Model vs measured/ })).toBeInTheDocument();
     expect(screen.getByTestId("chart-now")).toBeInTheDocument();
+  });
+});
+
+// --- PM10 and coarse PM ---
+
+// fine 100 (60 local vehicles + 40 Punjab fires), coarse 50 (30 local dust + 20 local vehicles)
+const simBoth = {
+  ...sim100, coarse_dust_delhi_ncr: flat(N, 30), coarse_vehicles_delhi_ncr: flat(N, 20),
+};
+const local = { vehicles_delhi_ncr: flat(N, 54), coarse_dust_delhi_ncr: flat(N, 27), coarse_vehicles_delhi_ncr: flat(N, 6) };
+
+function setupPollutant(pollutant: "pm25" | "pm10" | "coarse", pm10: (number | null)[] | null, pm25: (number | null)[] | null, extra = {}) {
+  const meta = makeMeta({ hours: N, cities: [delhi(simBoth, { by_tag_local: local })] });
+  return renderPanel(<CityPanel />, {
+    meta, hour: H, pollutant,
+    measured: pm25 ? { delhi: measuredReady(pm25, 6) } : {},
+    measuredPm10: pm10 ? { delhi: measuredReady(pm10, 4) } : {},
+    ...extra,
+  });
+}
+
+describe("CityPanel: PM2.5 view with coarse tags in the run", () => {
+  it("is unchanged by them: fine tags only, no measured-coarse row", () => {
+    setupPollutant("pm25", flat(N, 300), flat(N, 160));
+    expect(screen.getByTestId("sim-aqi")).toHaveTextContent("233");
+    expect(screen.getByTestId("sim-hourly").textContent).toBe("this hour: 100 µg/m³");
+    expect(screen.getByTestId("measured-aqi")).toHaveTextContent("331"); // CPCB PM2.5, not PM10
+    expect(screen.getByTestId("seg-local:vehicles").style.width).toBe("37.5%"); // 60 of 160
+    expect(legend().queryByText(/dust/)).toBeNull();
+    expect(screen.queryByTestId("measured-coarse")).toBeNull();
+    expect(screen.getByText("PM2.5-based AQI (24 h)")).toBeInTheDocument();
+  });
+});
+
+describe("CityPanel: PM10 view", () => {
+  it("numbers, labels and AQI are PM10's", () => {
+    setupPollutant("pm10", flat(N, 300), flat(N, 160));
+    // pm10ToAqi(150) = 133.3; measured pm10ToAqi(300) = 250
+    expect(screen.getByTestId("sim-aqi")).toHaveTextContent("133");
+    expect(screen.getByTestId("sim-category")).toHaveTextContent(/Moderate · PM10 150 µg\/m³ \(24 h mean\)/);
+    expect(screen.getByTestId("sim-hourly").textContent).toBe("this hour: 150 µg/m³");
+    expect(screen.getByTestId("measured-aqi")).toHaveTextContent("250");
+    expect(screen.getByTestId("aqi-detail")).toHaveTextContent("PM10-based AQI (24 h)model −50% (24 h means)4 stations");
+    expect(screen.getByText(/hourly PM10, µg\/m³/)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /hourly PM10 over the run window/ })).toBeInTheDocument();
+    expect(screen.getByText(MODEL_SCOPE_NOTE_COARSE)).toBeInTheDocument();
+  });
+
+  it("breakdown: coarse folded into the fine rows, shares of measured PM10", () => {
+    setupPollutant("pm10", flat(N, 300), flat(N, 160));
+    // local vehicles 60 + 20 = 80, fires 40, local dust 30, gap 150 of 300
+    expect(parseFloat(screen.getByTestId("seg-local:vehicles").style.width)).toBeCloseTo((80 / 300) * 100, 3);
+    expect(legend().getByTestId("share-fire:punjab")).toHaveTextContent("13%");
+    expect(legend().getByTestId("share-local:dust")).toHaveTextContent("10%");
+    expect(legend().getByTestId("share-unexplained")).toHaveTextContent("50%");
+    expect(screen.getByText("This hour: model 150 vs measured 300 µg/m³")).toBeInTheDocument();
+  });
+
+  it("marks the dust row 'estimated' with the source; not when the run's dust is not an estimate", () => {
+    const { unmount } = setupPollutant("pm10", null, null);
+    const row = legend().getByText("Local road and construction dust").closest("li")!;
+    const tag = within(row).getByTestId("estimated-tag");
+    expect(tag).toHaveTextContent("estimated");
+    expect(tag).toHaveAttribute("title", makeMeta().notes.dust_source);
+    expect(tag).toHaveAttribute("aria-description", makeMeta().notes.dust_source);
+    expect(within(legend().getByText("Local vehicles").closest("li")!).queryByTestId("estimated-tag")).toBeNull();
+    unmount();
+    const meta = makeMeta({ hours: N, cities: [delhi(simBoth)], notes: { ...makeMeta().notes, dust_estimated: false } });
+    renderPanel(<CityPanel />, { meta, hour: H, pollutant: "pm10" });
+    expect(screen.queryByTestId("estimated-tag")).toBeNull();
+  });
+
+  it("measured coarse row: PM10 − PM2.5 at this hour beside the model's coarse value", () => {
+    setupPollutant("pm10", flat(N, 300), flat(N, 160));
+    expect(screen.getByTestId("measured-coarse")).toHaveTextContent(
+      "Measured coarse (PM10 − PM2.5): 140 µg/m³ · model coarse 50 µg/m³ · this hour; shown for comparison, not used by the model",
+    );
+  });
+
+  it("measured coarse row: a dash when either series is missing at this hour, 0 when PM10 reads below PM2.5", () => {
+    const gap = flat(N, 160);
+    gap[H] = null;
+    const a = setupPollutant("pm10", flat(N, 300), gap);
+    expect(screen.getByTestId("measured-coarse")).toHaveTextContent("Measured coarse (PM10 − PM2.5): – µg/m³ · model coarse 50 µg/m³");
+    a.unmount();
+    const b = setupPollutant("pm10", flat(N, 300), null); // PM2.5 not loaded
+    expect(screen.getByTestId("measured-coarse")).toHaveTextContent("Measured coarse (PM10 − PM2.5): – µg/m³");
+    b.unmount();
+    setupPollutant("pm10", flat(N, 120), flat(N, 160));
+    expect(screen.getByTestId("measured-coarse")).toHaveTextContent("Measured coarse (PM10 − PM2.5): 0 µg/m³ · model coarse 50 µg/m³");
+  });
+
+  it("the measurement never changes the model's numbers", () => {
+    const a = setupPollutant("pm10", flat(N, 300), flat(N, 160));
+    const model = () => [screen.getByTestId("sim-aqi").textContent, screen.getByTestId("sim-hourly").textContent, screen.getByTestId("mh-local").textContent];
+    const withData = model();
+    a.unmount();
+    setupPollutant("pm10", null, null);
+    expect(model()).toEqual(withData);
+  });
+
+  it("uses the PM10 Copernicus series, not the PM2.5 one", () => {
+    setupPollutant("pm10", null, null, {
+      cams: { delhi: { ...IDLE_CITY_DATA, status: "error", error: "pm25 failed" } },
+      camsPm10: { delhi: { ...IDLE_CITY_DATA, status: "ready", values: flat(N, 210) } },
+    });
+    expect(screen.queryByTestId("cams-failed")).toBeNull();
+    expect(screen.getByText("Copernicus CAMS")).toBeInTheDocument();
+    expect(screen.getByText("210")).toBeInTheDocument(); // the chart readout at the playhead
+  });
+
+  it("made here vs arrived follows the pollutant, with the PM2.5 vs coarse line", () => {
+    setupPollutant("pm10", null, null);
+    expect(screen.getByTestId("made-here-title")).toHaveTextContent("Made here vs arrived · PM10 (this hour)");
+    expect(screen.getByTestId("mh-local")).toHaveTextContent("87 µg/m³58%"); // 54 + 27 + 6 of 150
+    expect(screen.getByTestId("made-here-compare")).toHaveTextContent("Made here: PM2.5 54% · coarse 66%");
+    expect(screen.getByTestId("deposition-note")).toHaveTextContent("5× faster");
+  });
+});
+
+describe("CityPanel: coarse view", () => {
+  it("shows 24 h mean concentrations and no AQI anywhere", () => {
+    setupPollutant("coarse", flat(N, 300), flat(N, 160));
+    expect(screen.queryByTestId("sim-aqi")).toBeNull();
+    expect(screen.queryByTestId("measured-aqi")).toBeNull();
+    expect(screen.getByTestId("sim-mean")).toHaveTextContent("50");
+    expect(screen.getByTestId("sim-category")).toHaveTextContent("model coarse PM, µg/m³ (24 h mean)");
+    expect(screen.getByTestId("measured-mean")).toHaveTextContent("140");
+    expect(screen.getByText("measured (CPCB, PM10 − PM2.5)")).toBeInTheDocument();
+    expect(screen.getByTestId("aqi-detail")).toHaveTextContent(
+      "Coarse PM, 2.5–10 µm · 24 h means, no AQImodel −64% (24 h means)PM10: 4 stations · PM2.5: 6 stations",
+    );
+    expect(screen.queryByText(/-based AQI/)).toBeNull();
+    expect(screen.queryByText(/Poor|Moderate|Severe|Satisfactory|Good/)).toBeNull();
+  });
+
+  it("breakdown: coarse tags only under the fine row names, shares of measured coarse", () => {
+    setupPollutant("coarse", flat(N, 300), flat(N, 200)); // measured coarse 100
+    expect(screen.getByTestId("seg-local:dust").style.width).toBe("30%");
+    expect(screen.getByTestId("seg-local:vehicles").style.width).toBe("20%");
+    expect(legend().getByTestId("share-unexplained")).toHaveTextContent("50%");
+    expect(legend().queryByText(/Fires/)).toBeNull(); // the run has no coarse fire PM here
+    expect(screen.getByTestId("measured-coarse")).toHaveTextContent("Measured coarse (PM10 − PM2.5): 100 µg/m³ · model coarse 50 µg/m³");
+    expect(screen.queryByText(/^This hour: model/)).toBeNull(); // the row above already says it
+  });
+
+  it("no Copernicus line, readout or legend entry; the dots are CPCB PM10 − PM2.5", () => {
+    const { container } = setupPollutant("coarse", flat(N, 300), flat(N, 160), {
+      cams: { delhi: { ...IDLE_CITY_DATA, status: "ready", values: flat(N, 999) } },
+    });
+    expect(screen.queryByText(/Copernicus/)).toBeNull();
+    expect(container.querySelector(".line-cams")).toBeNull();
+    expect(container.querySelectorAll(".chart-readout .key-cams")).toHaveLength(0);
+    expect(screen.getByText("CPCB (PM10 − PM2.5)")).toBeInTheDocument();
+    expect(screen.getByText(/hourly coarse PM, µg\/m³/)).toBeInTheDocument();
+  });
+
+  it("waits for both CPCB series, and reports which one failed", () => {
+    const a = setupPollutant("coarse", flat(N, 300), null);
+    expect(screen.getByText("fetching CPCB data…")).toBeInTheDocument();
+    a.unmount();
+    setupPollutant("coarse", null, flat(N, 160), {
+      measuredPm10: { delhi: { ...IDLE_CITY_DATA, status: "error", error: "OpenAQ timed out" } },
+    });
+    expect(screen.getByText("PM10: OpenAQ timed out")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("a user-added source is not part of coarse PM", () => {
+    const meta = makeMeta({ hours: N, cities: [delhi({ ...simBoth, user_1: flat(N, 500) })] });
+    meta.tags = [...meta.tags, { id: "user_1", kind: "user", sector: null, region: null, label: "Kiln", color: "#999", size: "fine" }];
+    renderPanel(<CityPanel />, { meta, hour: H, pollutant: "coarse" });
+    expect(screen.getByTestId("sim-hourly").textContent).toBe("this hour: 50 µg/m³");
+    expect(legend().queryByText("Kiln")).toBeNull();
+  });
+});
+
+describe("cityView and coarseMeasured", () => {
+  const city = delhi(simBoth);
+  const w = { vehicles_delhi_ncr: 1, fire_punjab: 1, coarse_dust_delhi_ncr: 1, coarse_vehicles_delhi_ncr: 1 };
+  it("defaults to PM2.5 and ignores the coarse tags there", () => {
+    const v = cityView(city, w, H, N, null, {});
+    expect(v.simHourly).toBe(100);
+    expect(v.simCoarseHourly).toBeNull();
+    expect(v.legend.map((r) => r.key)).toEqual(["fire:punjab", "local:vehicles"]);
+  });
+  it("weights reach the folded rows through the fine id's coarse twin weight", () => {
+    const v = cityView(city, { ...w, coarse_dust_delhi_ncr: 0, dust_delhi_ncr: 0 } as never, H, N, null, {}, "coarse");
+    expect(v.simHourly).toBe(20);
+    expect(v.simAqi).toBeNull();
+    expect(v.legend.map((r) => [r.key, r.sector])).toEqual([["local:vehicles", "vehicles"]]);
+  });
+  it("coarseMeasured: loading until both are ready, then the difference and the smaller station count", () => {
+    const ready = (values: (number | null)[], n: number) => measuredReady(values, n);
+    expect(coarseMeasured(ready([1], 2), IDLE_CITY_DATA).status).toBe("loading");
+    expect(coarseMeasured(ready([180, null, 90], 4), ready([100, 50, 100], 6))).toEqual({
+      status: "ready", values: [80, null, 0], stationCount: 4, error: null,
+    });
+    expect(coarseMeasured(ready([1], 2), { ...IDLE_CITY_DATA, status: "error", error: "x" })).toMatchObject({ status: "error", error: "PM2.5: x" });
   });
 });

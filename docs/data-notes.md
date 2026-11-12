@@ -38,6 +38,15 @@ Baseline non-fire PM2.5 as constant (NY, NX) grids in kg per hour, one per `{sec
   | IRO | `8dc2028998d8b25682ebaa46283abfa4397f89f9759a9271a6c4d73e8302baab` |
   | NFE | `4c0ea258e5b88b74cb065b164976552d9e9753d5c432102f7f9630f51ee2a1cc` |
   | CHE | `c33a6cfb8945f043590c93c2e46187d105abc8a393127f5edbd1adae4252c77b` |
+  | TRO (PM10) | `c8565093cf9c5fd79e56a405d5f69345296cd85bd92ccba13d2ecf1aca39b485` |
+  | ENE (PM10) | `ebe098cc3276f0c14370a6c7e185680c89fc0831cf3d726d0ff93e1d072e86db` |
+  | IND (PM10) | `bc655220654df7377267a13acbf03128e40cf041b2acdb4374b0b8e9faa10aed` |
+  | REF_TRF (PM10) | `6e3c59a7a8dc8b7d3daaa63bc60268113d219ff97ea943f72f837d2d4977d992` |
+  | RCO (PM10) | `68de9a4602afc5a4ed680c2fbdeb5c2025dbc12879b139471d86a92ab3f96980` |
+  | NMM (PM10) | `f2566302a36695dfac7976f70df1b281a2b11d8fc6b69334a72e52db2f2dad8c` |
+  | IRO (PM10) | `e3df37c56e95be2cede3d5bac21836f84662aade466285e5b693483e353fcf17` |
+  | NFE (PM10) | `383f953ce698d9ff452d1cfd60d4011e05cf027f590cb402188a9cd56f159fd9` |
+  | CHE (PM10) | `b24827e8b7b0cc393692ebde8d3e045f70b2d92e4aea611fe66d685684dbd1df` |
 - Layout (read from the file, not assumed): NetCDF4, global 1800 x 3600, one float32 variable `emissions(lat, lon)`, `units = "Tonnes"` (per cell per year), `_FillValue = NaN` (none present in the TRO file), `lat` -89.95..89.95 ascending (south to north), `lon` -179.95..179.95, cell centres at x.x5 so they coincide with the model's 0.1 degree centres. The loader still works out ordering from the coordinate variables, accepts descending latitude and `kg m-2 s-1` flux files, and refuses misaligned or partial coverage.
 - Conversion: kg/h = tonnes x 1000 / 8760 (2022 has 8760 hours); annual mean rate, no diurnal or seasonal profile.
 - Licence: CC BY 4.0 (https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/EDGAR/datasets/v81_FT2022_AP_new/copyright.txt: reuse allowed with credit and changes indicated). Required credit: EDGAR v8.1 air pollutants, European Commission JRC, https://edgar.jrc.ec.europa.eu/dataset_ap81. The UI/docs that show these figures must carry that acknowledgement.
@@ -47,7 +56,7 @@ Baseline non-fire PM2.5 as constant (NY, NX) grids in kg per hour, one per `{sec
 ### India-specific inventory (ESSD preprint essd-2023-310): inspected, not usable
 - Sahu et al., "Development and comprehensive analysis of spatially resolved technological high resolution (0.1x0.1) Emission Inventory of Particulate Matter for India" (SNEIIv2.0), 17 sources, base year 2020, tons/grid/yr, `.shp` format, ~300 MB. It does include a **wind-blown road dust** sector (EPA AP-42 based).
 - Zenodo record https://doi.org/10.5281/zenodo.7885103 (V2, 2023-05-02) declares licence CC BY 4.0 but its files are **access-restricted**: the record page says "The record is publicly accessible, but files are restricted. Log in to check if you have access", and `/api/records/7885103/files` returns 403 "Permission denied". Obtaining them needs a Zenodo login and the authors' approval, which is not something the fetch script can do, so no workaround was attempted. There is no other version of the record.
-- Consequence: **no usable gridded dust field**. EDGAR itself has no road or construction dust sector (`NMM` non-metallic minerals and `PRO_*` are industrial or fuel process emissions, not dust). Per the spec, `dust_*` grids are zero and `inventory_notes()["dust_available"]` is False; nothing is proxied. If the authors grant access, a dust loader for the `.shp` layer is the only missing piece.
+- Consequence: **no usable gridded dust field** (the dust sector is now an estimate from national totals; see "PM10" below). Original finding: EDGAR itself has no road or construction dust sector (`NMM` non-metallic minerals and `PRO_*` are industrial or fuel process emissions, not dust). Per the spec, `dust_*` grids are zero and `inventory_notes()["dust_available"]` is False; nothing is proxied. If the authors grant access, a dust loader for the `.shp` layer is the only missing piece.
 
 ### Mapping (fixed)
 | model sector | source |
@@ -55,7 +64,7 @@ Baseline non-fire PM2.5 as constant (NY, NX) grids in kg per hour, one per `{sec
 | `vehicles` | EDGAR TRO |
 | `industry` | EDGAR ENE + IND + REF_TRF (energy and combustion) + NMM + IRO + NFE + CHE (industrial process PM2.5) |
 | `residential` | EDGAR RCO |
-| `dust` | none: zeros, `dust_available = False` |
+| `dust` | ESTIMATE, not EDGAR: TERI 2016 national road dust + construction totals spread by the EDGAR TRO pattern (see "PM10" below); `dust_estimated = True` |
 
 Regions come from `region_mask()`. `region_mask()` labels every cell outside the states (sea, Pakistan, Nepal, China...) as `rest_of_india`, so the loader also applies `india_mask()` (cell centre inside any state or union-territory polygon of the official outline) and drops cells outside India. Because that test uses cell centres on a 0.1 degree grid with a simplified outline, coastal cells that are mostly land but centred offshore are dropped. The loss is not spatially uniform. Measured on the summed sector grids within 0.5 degree of each city, the share kept is: Delhi 100 %, Kolkata 100 %, Mumbai 99.4 %, Chennai 84 %; the national shortfall against EDGAR's country totals (about 1-3 %) comes from such edge cells. Inventory (anthropogenic) emissions outside India are dropped by design: for example only 5 % of the inventory emission within 0.5 degree of Lahore is kept (the part on the Indian side of the boundary), so vehicles, industry and residential sources in Pakistani Punjab, which is upwind of Delhi in winter, contribute nothing, and neither do those in Nepal, Bangladesh or China. This applies to the inventory only: satellite-detected fires anywhere in the domain, including Pakistan, Nepal and Bangladesh, are simulated (see Fires below).
 
@@ -81,7 +90,7 @@ India-total PM2.5 by sector from `inventory_emissions()` (kt/yr = kg/h x 8760 / 
 |---|---|---|---|---|---|---|---|
 | vehicles | 1.0 | 1.2 | 1.4 | 4.1 | 1.9 | 47.7 | 57.3 |
 | industry, power and process | 87.5 | 56.9 | 46.9 | 89.9 | 23.5 | 2029.8 | 2334.5 |
-| dust | 0 | 0 | 0 | 0 | 0 | 0 | 0 (not available) |
+| dust (PM2.5 part, estimated; see "PM10" below) | 7.3 | | | | | | 439.0 |
 | residential | 43.5 | 38.9 | 28.7 | 268.4 | 150.3 | 1125.0 | 1654.8 |
 
 Share of each sector's domain-wide EDGAR total dropped for lying outside India: vehicles 21.6 %, industry 14.1 %, residential 37.4 % (neighbouring countries and sea). These sit in the 66-98 E, 6-38 N domain and are not emitted; transport of inventory emissions from them into India is therefore not modelled (fires there are; see Fires below).
@@ -113,6 +122,37 @@ EDGAR's country table splits road transport (1A3b, inside TRO) into `1.A.3.b_noR
 - EDGAR 0.1 degree allocation uses global proxy data; city-scale placement is approximate.
 - One annual mean rate for every hour: no diurnal, weekly or seasonal variation (e.g. winter heating or burning).
 
+## PM10: coarse particles and the dust estimate
+
+PM10 in the model is PM2.5 (the fine tags, unchanged) plus a coarse part, 2.5-10 um, carried by a second set of tags (`coarse_` + the fine tag id; 68 tags in all). Nothing here is fitted to measurements.
+
+### Coarse emissions
+- **EDGAR sectors**: the PM10 files of the same release and sector codes (table above, rows marked PM10). Coarse = PM10 - PM2.5 per cell, floored at 0. India totals after dropping non-India cells (kt/yr): vehicles 14.7, industry 602.3, residential 1542.9 (fine, for comparison: 57.2, 2334.5, 1654.8).
+- **Fires**: coarse = PM2.5 x (TPM - PM2.5) / PM2.5 from Andreae 2019 (Atmos. Chem. Phys. 19, 8523-8546, Table 1, values read from the paper): agricultural residues PM2.5 8.2, TPM 12.9 g/kg -> 0.573; savanna and grassland PM2.5 6.7, TPM 8.7 -> 0.299. Andreae groups PM10 and total-particulate measurements in the TPM row, so these are upper bounds on the 2.5-10 um fraction.
+- **Road and construction dust (ESTIMATE)**: no gridded field is available (see above). National totals are taken from TERI, "Development of spatially resolved air pollution emission inventory of India", Executive Summary, Table S2, base year 2016 (Gg/yr, read from the report): road dust PM10 1001, PM2.5 242; construction PM10 3291, PM2.5 197. Sum: PM2.5 439, PM10 4292, so coarse 3853. These totals are spread over cells inside India in proportion to the EDGAR road-transport (TRO) PM2.5 grid, at a constant rate all year. Delhi NCR (50 km circle) receives 7.3 kt/yr fine and 64.1 kt/yr coarse.
+  - What is assumed, not known: the spatial pattern (construction does not follow traffic exactly; unpaved rural roads, bare soil and wind-blown desert dust are not represented); the year (2016 totals, no growth); no diurnal, weekday or seasonal cycle (real road dust falls in the monsoon); no dependence on wind speed or rain at the source.
+  - Small double count: EDGAR TRO already contains its own resuspension share (about 17 kt PM2.5; see `1.A.3.b_RES` above), which stays in `vehicles`.
+  - The estimate also adds PM2.5 (439 kt/yr) to the fine model, so PM2.5 results differ from runs made before it (format version 4). The dust slider at 0 % removes it.
+  - The UI marks dust as "estimated" wherever it appears.
+
+### Coarse physics
+- One difference from fine parcels: deposition velocity 1 cm/s (`V_DEP_COARSE_M_S`) instead of 0.2 cm/s. Wind, turbulence, terrain blocking and washout are identical. The 1 cm/s is a chosen value inside a published range (constants.py), not a measurement.
+- Consequence in a 500 m mixed layer: e-folding airborne time about 14 h for coarse against 69 h for fine; after 24 h, 18 % of a coarse parcel's mass is still airborne against 71 % of a fine one. Coarse pollution therefore reaches less far, by a factor that depends on mixing height and wind; it is not confined to its source cell.
+- Not modelled: the size spectrum inside 2.5-10 um (one velocity for all), near-surface concentration gradients close to a source (the layer is well mixed), wind-driven resuspension, stronger rain scavenging of coarse particles.
+
+### "Made here"
+Each parcel records its release cell. For each city, hour and tag the run stores the parcel mass in the city's 3 x 3 cell block and the part of it released inside that block; the ratio multiplies the city's concentration to give `by_tag_local`. "Made here" is therefore "emitted inside the same ~30 km square the city value is averaged over", from unsmoothed parcel sums; where a tag is present in the block only through the smoothing kernel its made-here part is 0. Neighbouring cities (Delhi, Noida, Ghaziabad, Gurugram, Faridabad) have overlapping or adjacent squares, so one city's "arrived" includes its neighbours' emissions.
+
+### First look, not tuned (run date 2025-11-05, window mean, ug/m3)
+| City | model PM2.5 | model coarse | model PM10 | CPCB PM2.5 | CPCB PM10 | made here: fine | made here: coarse |
+|---|---|---|---|---|---|---|---|
+| Delhi | 88.6 | 53.8 | 142.4 | 164.4 | 268.3 | 54 % | 66 % |
+| Lucknow | 31.0 | 11.9 | 42.8 | 82.4 | 159.0 | 30 % | 59 % |
+| Mumbai | 70.0 | 37.0 | 106.9 | 40.2 | 102.7 | 48 % | 66 % |
+| Ludhiana | 24.7 | 12.4 | 37.1 | 79.1 | 158.1 | 26 % | 51 % |
+
+Measured coarse (CPCB PM10 - PM2.5) is 104 at Delhi against a modelled 54: the model reads low for coarse as it does for fine. Run time for this date: 92 s (peak 0.51 million parcels).
+
 ## Fires (`server/vayu/emissions/fires.py`, `server/vayu/clients/firms.py`)
 
 - **Where.** Every VIIRS detection inside the model domain box (66-98 E, 6-38 N) is emitted, whether or not it lies in India: fires in Pakistan (including Pakistani Punjab), Nepal and Bangladesh are simulated. Cells in Punjab, Haryana, Uttar Pradesh and Madhya Pradesh are tagged by state; every other cell, inside or outside India, is tagged `other` and shown as "Fires (satellite) — other states and neighbouring countries". A test pins this (`test_fire_outside_india_inside_domain_is_emitted_as_other`). Detections outside the domain box are dropped.
@@ -124,10 +164,10 @@ EDGAR's country table splits road transport (1A3b, inside TRO) into `1.A.3.b_noR
 
 Real run for 2023-11-05 (window 2023-11-03 00Z to 2023-11-08 23Z: 144 output hours plus 48 h spin-up = 192 simulated hours, 6 steps per hour), on the development Mac (Apple silicon), measured on 2026-11-11.
 
-### Current configuration (format version 3)
+### Current configuration (format version 3; timings below predate the coarse tags of version 4, which bring a run to about 92 s)
 - Frames are trapezoid hour means over the seven states in an hour: 1/2 weight on the post-release state at the start, 1 on each of the five intermediate states, 1/2 on the state after the sixth step, divided by 6.
 - Each tag's mass grid is smoothed with the age-dependent box kernel: none under 6 h, 3 x 3 from 6 to 24 h, 5 x 5 beyond.
-- Parcels per tag-hour are 100, or 400 for the four `*_rest_of_india` sector tags (3 of them emit; dust has no data).
+- Parcels per tag-hour are 100, or 400 for the four `*_rest_of_india` sector tags and their four coarse twins (dust is an estimate).
 - `MetField.sample` has a faster path for a single sample time.
 - The seven terrain look-ups in each step share their cell-index computations. `step` output is bit-identical to before, and a test asserts it.
 

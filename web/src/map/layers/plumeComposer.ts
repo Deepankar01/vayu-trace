@@ -1,10 +1,11 @@
 /**
- * Per-hour composition for the plume, memoised. Composing 34 tags x 102,400 cells is too slow for
+ * Per-hour composition for the plume, memoised. Composing up to 68 tags x 102,400 cells is too slow for
  * every animation frame, so each whole hour is composed (and Mercator-resampled) once per key;
  * per frame only two composed hours are blended and colourised (`colorizeInto`).
  */
 import { HAZE, NAN_CODE, type Frame } from "../../api/decode";
 import { composeField, diffFields, type Weights } from "../../lib/compose";
+import type { Pollutant } from "../../lib/pollutant";
 import { PLUME_ROWS, resampleRowsToMercator, type PlumeMode } from "./plume";
 
 export interface HourKey {
@@ -17,13 +18,15 @@ export interface HourKey {
   /** Baseline weights in diff mode, else null. */
   baseline: Weights | null;
   mode: PlumeMode;
+  /** Only this pollutant's tags are composed; absent = every concentration tag in the frame. */
+  pollutant?: Pollutant;
   /** frameCache.isStale(hour) when composed. */
   stale: boolean;
 }
 
 export interface ComposedHour {
   key: HourKey;
-  /** Mercator-resampled, south first: dry PM2.5 (pm25/aqi) or composed minus baseline (diff). */
+  /** Mercator-resampled, south first: the dry concentration or composed minus baseline (diff). */
   value: Float32Array;
   /** Mercator-resampled haze ratio (`__haze`, the growth factor = haze-weighted / dry); null in diff. */
   haze: Float32Array | null;
@@ -33,7 +36,7 @@ export interface ComposedHour {
 export function sameHourKey(a: HourKey | null, b: HourKey): boolean {
   return (
     a !== null && a.hour === b.hour && a.build === b.build && a.frame === b.frame && a.weights === b.weights &&
-    a.baseline === b.baseline && a.mode === b.mode && a.stale === b.stale
+    a.baseline === b.baseline && a.mode === b.mode && a.pollutant === b.pollutant && a.stale === b.stale
   );
 }
 
@@ -117,9 +120,10 @@ export class PlumeComposer {
     const { nx, ny, lat_min, cell } = this.grid;
     const latMax = lat_min + cell * ny;
     const resample = (f: Float32Array) => resampleRowsToMercator(f, nx, ny, lat_min, latMax, PLUME_ROWS);
-    const dry = composeField(key.frame, key.weights);
+    const only = { pollutant: key.pollutant };
+    const dry = composeField(key.frame, key.weights, only);
     if (key.baseline) {
-      const base = composeField(key.frame, key.baseline);
+      const base = composeField(key.frame, key.baseline, only);
       return { key, value: resample(diffFields(dry, base)), haze: null };
     }
     let haze: Float32Array | null = null;

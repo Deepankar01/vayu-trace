@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import fixture from "./__fixtures__/breakdown-cases.json";
 import { arrival, breakdown, breakdownIncomplete, type BreakdownRow } from "./breakdown";
-import { FIRE_STATES, REGIONS, SECTORS, TAGS } from "./tags";
+import { COARSE_PREFIX, FIRE_STATES, REGIONS, SECTORS, TAGS, TAG_BY_ID } from "./tags";
 
 type Json = number | string | null | boolean | Json[] | { [k: string]: Json };
 const revive = (x: Json): Json =>
@@ -12,7 +12,22 @@ const same = (a: number, b: number) => Object.is(a, b) || (a === b); // 0 and -0
 describe("tag catalogue", () => {
   it("matches vayu.domain.TAGS", () => {
     expect(TAGS.map((t) => ({ ...t }))).toEqual(fixture.catalogue);
-    expect(TAGS).toHaveLength(FIRE_STATES.length * 2 + SECTORS.length * REGIONS.length);
+    const fine = FIRE_STATES.length * 2 + SECTORS.length * REGIONS.length;
+    expect(TAGS).toHaveLength(2 * fine);
+  });
+
+  it("lists every fine tag, then its coarse twin: same kind, sector, region, label and colour", () => {
+    const fine = TAGS.filter((t) => t.size === "fine");
+    const coarse = TAGS.filter((t) => t.size === "coarse");
+    expect(TAGS.slice(0, fine.length)).toEqual(fine); // fine tag indices never change
+    expect(coarse).toEqual(fine.map((t) => ({ ...t, id: `${COARSE_PREFIX}${t.id}`, size: "coarse" })));
+    expect(fine.some((t) => t.id.startsWith(COARSE_PREFIX))).toBe(false);
+    expect(TAG_BY_ID.get("coarse_dust_delhi_ncr")).toMatchObject({ sector: "dust", region: "delhi_ncr", size: "coarse" });
+  });
+
+  it("breakdown fixtures use fine tag ids only (coarse values are folded before the call)", () => {
+    const ids = fixture.cases.flatMap((c) => Object.keys((c.input as { by_tag_now: object }).by_tag_now));
+    expect(ids.some((id) => id.startsWith(COARSE_PREFIX))).toBe(false);
   });
 });
 

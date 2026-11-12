@@ -45,7 +45,7 @@ from vayu.clients.datagov import live_pm25
 from vayu.clients.firms import detections
 from vayu.clients.openaq import city_pm25
 from vayu.clients.openmeteo import fetch_cams_pm25, fetch_met
-from vayu.constants import FIRE_SCALING_DEFAULT, MET_STEP_DEG
+from vayu.constants import FIRE_SCALING_DEFAULT, MET_STEP_DEG, V_DEP_COARSE_M_S, V_DEP_M_S
 from vayu.domain import CELL, LAT_MIN, LON_MIN, NX, NY, TAGS
 from vayu.emissions.dropped import FIREWORKS_SIZE_NAMES, KINDS, dropped_emissions
 from vayu.emissions.inventory import inventory_notes
@@ -85,6 +85,7 @@ if _SIM is None or _SIM.kind != "sector" or (
     raise RuntimeError(
         f"SIM_TAG {SIM_TAG!r} must be a catalogue sector tag with the default parcel budget "
         f"({PARTICLES_PER_TAG_HOUR} per hour); pick another stand-in tag for dropped sources")
+POLLUTANTS = ("pm25", "pm10")
 _SOURCE_FIELDS = ("kind", "lon", "lat", "start_hour", "duration_h", "amount")  # in /meta
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _USER = re.compile(r"user_[1-9]\d*")
@@ -323,6 +324,12 @@ def _city(city_id: str) -> City:
     return city
 
 
+def _pollutant(value: str) -> str:
+    if value not in POLLUTANTS:
+        raise HTTPException(422, f"pollutant must be one of {', '.join(POLLUTANTS)}")
+    return value
+
+
 def _check_hour(run, hour: int) -> None:
     if not 0 <= hour < run.hours:
         raise HTTPException(404, f"hour {hour} outside 0..{run.hours - 1}")
@@ -358,22 +365,28 @@ def _fires(run) -> list[list]:
 
 
 def _extras(b: _Build) -> dict:
-    """{"cities": {id: {by_tag, fire_age_h, met}}, "fires": [...]}, built once per build."""
+    """{"cities": {id: {by_tag, by_tag_local, fire_age_h, met}}, "fires": [...]}, built once per
+    build. `by_tag_local` is the part of each tag's series released inside the city's own block
+    (tags whose local part is all zero are omitted)."""
     with b.lock:
         if b._extras is not None:
             return b._extras
         cities_p, fires_p = b.extras_dir / "cities.json", b.extras_dir / "fires.json"
         if cities_p.is_file() and fires_p.is_file():
             stored = json.loads(cities_p.read_text())
-            if all(c.id in stored for c in CITIES):  # else stale (written for another city list)
+            # else stale (written for another city list, or before by_tag_local existed)
+            if all(c.id in stored and "by_tag_local" in stored[c.id] for c in CITIES):
                 b._extras = {"cities": stored, "fires": json.loads(fires_p.read_text())}
                 return b._extras
         series = city_series(b.run, b.met(), b.met_offset_h)
         cities = {}
         for cid, s in series.items():
             by_tag = {t: _series(v) for t, v in s.by_tag.items()}
+            local = {t: _series(v) for t, v in (s.local_by_tag or {}).items()}
             cities[cid] = {
                 "by_tag": {t: v for t, v in by_tag.items() if not _all_zero(v)},
+                "by_tag_local": {t: v for t, v in local.items()
+                                 if t in by_tag and not _all_zero(by_tag[t]) and not _all_zero(v)},
                 "fire_age_h": _series(s.fire_age_h),
                 "met": {k: _series(v) for k, v in s.met.items()},
             }
@@ -689,9 +702,11 @@ def get_meta(run_id: str):
         users = _user_sources(b)
     by_id = {t.id: t for t in TAGS}
     tags = [{"id": t, "kind": by_id[t].kind, "sector": by_id[t].sector,
-             "region": by_id[t].region, "label": by_id[t].label, "color": by_id[t].color}
+             "region": by_id[t].region, "label": by_id[t].label, "color": by_id[t].color,
+             "size": by_id[t].size}
             for t in run.tags]
     tags += [{"id": u, "kind": "user", "sector": None, "region": None, "label": m["label"],
+              "size": "fine",
               "color": m["color"], "source": {k: m[k] for k in _SOURCE_FIELDS}}
              for u, m in users.items()]
     cities = []
@@ -704,6 +719,7 @@ def get_meta(run_id: str):
                 by_tag[u] = series
         cities.append({"id": c.id, "name": c.name, "lat": c.lat, "lon": c.lon,
                        "region": city_region(c), "by_tag": by_tag,
+                       "by_tag_local": e["by_tag_local"],
                        "fire_age_h": e["fire_age_h"], "met": e["met"]})
     inv = inventory_notes()
     return _json({
@@ -716,6 +732,8 @@ def get_meta(run_id: str):
         "tags": tags, "cities": cities,
         "notes": {
             "blh_estimated": run.blh_estimated, "dust_available": inv["dust_available"],
+            "dust_estimated": inv["dust_estimated"], "dust_source": inv["dust_source"],
+            "v_dep_fine_m_s": V_DEP_M_S, "v_dep_coarse_m_s": V_DEP_COARSE_M_S,
             "inventory_source": inv["source"], "inventory_year": inv["year"],
             "fire_scaling_default": FIRE_SCALING_DEFAULT, "step_stats": run.step_stats,
             "city_area_km": CITY_AREA_KM, "share_uncertainty_pp": SHARE_UNCERTAINTY_PP,
@@ -770,34 +788,41 @@ def get_path(run_id: str, city_id: str, hour: int, build: str | None = None):
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/cams")
-def get_cams(run_id: str, city_id: str, build: str | None = None):
+def get_cams(run_id: str, city_id: str, build: str | None = None, pollutant: str = "pm25"):
+    pollutant = _pollutant(pollutant)
     run = _resolve(run_id, build).run
     city = _city(city_id)
     try:
-        values = fetch_cams_pm25(city.lat, city.lon, run.start, run.hours)
+        values = fetch_cams_pm25(city.lat, city.lon, run.start, run.hours,
+                                 **({} if pollutant == "pm25" else {"pollutant": pollutant}))
     except UpstreamError as exc:
         raise _upstream(exc) from None
     return _json({"values": _series(values)})
 
 
 @app.get("/api/runs/{run_id}/cities/{city_id}/measured")
-def get_measured(run_id: str, city_id: str, build: str | None = None, live: int = 0):
-    """CPCB via OpenAQ. The data.gov.in live value is fetched only with `?live=1` (the browser
-    does not ask for it: the feed's replies could not be verified)."""
+def get_measured(run_id: str, city_id: str, build: str | None = None, live: int = 0,
+                 pollutant: str = "pm25"):
+    """CPCB via OpenAQ (`?pollutant=pm10` for PM10). The data.gov.in live value (PM2.5 only) is
+    fetched only with `?live=1` (the browser does not ask for it: the feed's replies could not
+    be verified)."""
+    pollutant = _pollutant(pollutant)
     run = _resolve(run_id, build).run
     city = _city(city_id)
     now = _now()
     try:
-        m = city_pm25(city, run.start, run.hours, now=now)
+        m = city_pm25(city, run.start, run.hours, now=now,
+                      **({} if pollutant == "pm25" else {"parameter": pollutant}))
     except UpstreamError as exc:
         raise _upstream(exc) from None
     live_value, live_error = None, None
-    if live == 1 and run.start <= now < run.start + timedelta(hours=run.hours):
+    if live == 1 and pollutant == "pm25" and run.start <= now < run.start + timedelta(hours=run.hours):
         try:
             live_value = live_pm25(city)
         except UpstreamError as exc:
             live_error = _scrub(f"{exc.service}: {exc.message}")
     return _json({"values": _series(m.values), "station_count": m.station_count,
+                  "pollutant": pollutant,
                   "live": live_value, "live_error": live_error, "source": "CPCB via OpenAQ",
                   "aligned": "hour mean, overlap-weighted"})
 

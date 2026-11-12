@@ -11,20 +11,24 @@ from vayu.constants import (
     DT_S,
     EARTH_RADIUS_M,
     K_H_M2_S,
+    V_DEP_COARSE_M_S,
     V_DEP_M_S,
     WASHOUT_A,
     WASHOUT_B,
     Z_RELAX_S,
 )
-from vayu.domain import cell_index, inside
+from vayu.domain import NX, TAGS, cell_index, inside
 from vayu.met import MetField
 
 DEG_PER_RAD = 180.0 / np.pi
 MIN_MASS_FRACTION = 0.01  # parcels below this fraction of their release mass are dropped
 
+_COARSE_TAG = np.array([t.size == "coarse" for t in TAGS])  # by tag index
+
 _DTYPES = {
     "lon": np.float64, "lat": np.float64, "age_s": np.float32,
     "z_m": np.float32, "tag": np.int16, "mass0_kg": np.float32, "frac": np.float32,
+    "cell0": np.int32,
 }
 
 
@@ -41,6 +45,9 @@ class Particles:
               `mass_kg = mass0_kg * frac`. Transport and the depletion drop depend on `frac`
               only, never on the mass itself, so scaling emissions by any factor gives identical
               trajectories and survival.
+    cell0     flat index (iy * NX + ix) of the cell the parcel was released in, -1 if it was
+              released outside the grid; never changes. Filled from lon/lat when not given, so
+              construct parcels at their release position.
     """
     lon: np.ndarray
     lat: np.ndarray
@@ -49,6 +56,12 @@ class Particles:
     tag: np.ndarray
     mass0_kg: np.ndarray
     frac: np.ndarray
+    cell0: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        if self.cell0 is None:
+            ix, iy = cell_index(self.lon, self.lat)
+            self.cell0 = np.where(inside(ix, iy), iy * NX + ix, -1).astype(np.int32)
 
     def __len__(self) -> int:
         return len(self.lon)
@@ -136,15 +149,17 @@ def step(
        Moves up to two cells long are therefore checked against every cell they cross; only a
        single move longer than two cells can jump a one-cell ridge.
     3. z_m relaxes toward terrain(new position) + blh/2 with time constant Z_RELAX_S.
-    4. If `deposition`: frac *= exp(-(V_DEP/blh + WASHOUT_A * precip**WASHOUT_B) * DT), with blh
-       and precip from the start position; precip <= 0 gives no washout.
+    4. If `deposition`: frac *= exp(-(v_dep/blh + WASHOUT_A * precip**WASHOUT_B) * DT), with blh
+       and precip from the start position; precip <= 0 gives no washout. v_dep is V_DEP_M_S for
+       fine tags and V_DEP_COARSE_M_S for coarse tags (deposition including settling); nothing
+       else in the step depends on particle size.
     5. age += DT. Drop parcels outside the domain or with frac below MIN_MASS_FRACTION.
 
     All randomness comes from `rng`. The diffusivity K_H_M2_S is read from this module at call
     time.
 
-    Aliasing: the returned `Particles` may share arrays with the input `p` (always `tag` and
-    `mass0_kg`; also `frac` when `deposition=False`; all fields can be shared when no parcel
+    Aliasing: the returned `Particles` may share arrays with the input `p` (always `tag`,
+    `cell0` and `mass0_kg`; also `frac` when `deposition=False`; all fields can be shared when no parcel
     is dropped and a field is unchanged). Callers must not mutate either object's arrays in
     place.
     """
@@ -202,7 +217,8 @@ def step(
         wet = rain > 0
         washout = np.zeros(n)
         washout[wet] = WASHOUT_A * np.power(rain[wet], WASHOUT_B)
-        frac = frac * np.exp(-(V_DEP_M_S / blh + washout) * DT_S)
+        v_dep = np.where(_COARSE_TAG[p.tag], V_DEP_COARSE_M_S, V_DEP_M_S)
+        frac = frac * np.exp(-(v_dep / blh + washout) * DT_S)
 
     # 5. Age and drop.
     out = Particles(
@@ -211,6 +227,7 @@ def step(
         z_m=z.astype(np.float32, copy=False),
         tag=p.tag, mass0_kg=p.mass0_kg,
         frac=frac.astype(np.float32, copy=False),
+        cell0=p.cell0,
     )
     depleted = in_domain & (out.frac < MIN_MASS_FRACTION)
     keep = in_domain & ~depleted

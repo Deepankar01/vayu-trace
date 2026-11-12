@@ -10,6 +10,7 @@ function city(over: Partial<CityMeta> = {}): CityMeta {
   return {
     id: "kanpur", name: "Kanpur", lat: 26.45, lon: 80.33, region: "uttar_pradesh",
     by_tag: { vehicles_uttar_pradesh: flat(100), fire_punjab: flat(0) },
+    by_tag_local: {},
     fire_age_h: flat(null),
     met: { wind_ms: flat(2), wind_dir_deg: flat(270), rh: flat(0.5), temp_c: flat(20), blh_m: flat(500) },
     ...over,

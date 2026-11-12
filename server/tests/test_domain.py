@@ -30,7 +30,13 @@ def fire_state_at(lon, lat):
 
 
 def test_tag_count():
-    assert len(TAGS) == 34 and len({t.id for t in TAGS}) == 34
+    assert len(TAGS) == 68 and len({t.id for t in TAGS}) == 68
+    fine, coarse = TAGS[:34], TAGS[34:]
+    assert all(t.size == "fine" for t in fine) and all(t.size == "coarse" for t in coarse)
+    # each coarse tag is its fine twin with the id prefixed; fine indices are unchanged
+    assert [c.id for c in coarse] == ["coarse_" + f.id for f in fine]
+    assert [(c.kind, c.sector, c.region, c.label) for c in coarse] == [
+        (f.kind, f.sector, f.region, f.label) for f in fine]
 
 
 def test_tag_kinds_and_labels():

@@ -1,8 +1,9 @@
-import { act, fireEvent, screen } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { makeMeta } from "../test-utils/meta";
 import { renderPanel } from "../test-utils/panels";
-import { DATE_NOTE, TERRAIN_NOTE, TopBar, windText } from "./TopBar";
+import { NO_COARSE_AQI } from "../lib/pollutant";
+import { CONCENTRATION_CHIP, DATE_NOTE, TERRAIN_NOTE, TopBar, aqiChipNote, windText } from "./TopBar";
 
 describe("TopBar", () => {
   it("bounds the date input by the meta's min date and today (UTC)", () => {
@@ -70,12 +71,50 @@ describe("TopBar", () => {
     expect(screen.getByTestId("ist-clock")).toContainElement(screen.getByTestId("hour-tag"));
     expect(screen.getByTestId("hour-tag").textContent).toBe("forecast");
   });
-  it("PM2.5 and AQI are exclusive plume modes", () => {
+  it("concentration and AQI are exclusive plume modes", () => {
     const { store } = renderPanel(<TopBar date="2026-11-10" onDate={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: /^AQI/ }));
     expect(store.getState().layers).toMatchObject({ aqi: true, pm25: false });
-    fireEvent.click(screen.getByRole("button", { name: "PM2.5" }));
+    fireEvent.click(screen.getByRole("button", { name: CONCENTRATION_CHIP }));
     expect(store.getState().layers).toMatchObject({ aqi: false, pm25: true });
+  });
+  it("pollutant control: PM2.5 by default; one chip pressed; a click sets the store", () => {
+    const { store } = renderPanel(<TopBar date="2026-11-10" onDate={() => {}} />);
+    const group = within(screen.getByRole("group", { name: "Pollutant" }));
+    const pressed = () => group.getAllByRole("button").map((b) => [b.textContent, b.getAttribute("aria-pressed")]);
+    expect(pressed()).toEqual([["PM2.5", "true"], ["PM10", "false"], ["Coarse", "false"]]);
+    fireEvent.click(group.getByRole("button", { name: "PM10" }));
+    expect(store.getState().pollutant).toBe("pm10");
+    expect(pressed()).toEqual([["PM2.5", "false"], ["PM10", "true"], ["Coarse", "false"]]);
+    fireEvent.click(group.getByRole("button", { name: "Coarse" }));
+    expect(store.getState().pollutant).toBe("coarse");
+    expect(group.getByRole("button", { name: "Coarse" })).toHaveAttribute("title", "Coarse PM, 2.5–10 µm (PM10 minus PM2.5)");
+    // switching pollutant leaves the plume mode alone
+    expect(store.getState().layers).toMatchObject({ pm25: true, aqi: false });
+  });
+  it("the AQI chip names the pollutant; in the coarse view it is disabled and says why", () => {
+    const { store } = renderPanel(<TopBar date="2026-11-10" onDate={() => {}} />, {
+      layers: { pm25: false, aqi: true, wind: true, fires: true, terrain: false },
+    });
+    const aqi = () => screen.getByRole("button", { name: "AQI" });
+    const conc = () => screen.getByRole("button", { name: CONCENTRATION_CHIP });
+    expect(aqi()).toHaveAttribute("title", "Hourly PM2.5 shown on the 24-hour AQI scale — indicative");
+    expect(aqi()).toHaveAttribute("aria-pressed", "true");
+    act(() => store.getState().setPollutant("pm10"));
+    expect(aqi()).toHaveAttribute("title", aqiChipNote("pm10"));
+    expect(aqi().getAttribute("title")).toContain("PM10");
+    expect(aqi()).toBeEnabled();
+    act(() => store.getState().setPollutant("coarse"));
+    expect(aqi()).toBeDisabled();
+    expect(aqi()).toHaveAttribute("title", NO_COARSE_AQI);
+    expect(aqi()).toHaveAttribute("aria-description", NO_COARSE_AQI);
+    // the plume falls back to concentration, and the chips show that
+    expect(aqi()).toHaveAttribute("aria-pressed", "false");
+    expect(conc()).toHaveAttribute("aria-pressed", "true");
+    // the AQI choice is kept: back in PM2.5 it is on again
+    act(() => store.getState().setPollutant("pm25"));
+    expect(aqi()).toHaveAttribute("aria-pressed", "true");
+    expect(conc()).toHaveAttribute("aria-pressed", "false");
   });
   it("readouts for the selected city (Delhi by default)", () => {
     const meta = makeMeta();

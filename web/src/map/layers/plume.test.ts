@@ -1,5 +1,5 @@
 import { aqiColor, pm25Ramp } from "../../lib/colors";
-import { pm25ToAqi } from "../../lib/aqi";
+import { pm10ToAqi, pm25ToAqi } from "../../lib/aqi";
 import {
   PLUME_ROWS, DIFF_DEAD_BAND, DIFF_SATURATION, colorizeInto, fieldToImageData, gridBounds, hazeOpacityFactor, mercatorY,
   resampleRowsToMercator,
@@ -74,6 +74,14 @@ describe("fieldToImageData", () => {
       expect(p.slice(0, 3)).toEqual(hex(aqiColor(pm25ToAqi(v))));
       expect(p[3]).toBeGreaterThan(0);
     });
+  });
+
+  it("aqi10 mode uses the PM10 breakpoints, so the same value can fall in a lower category", () => {
+    const values = [20, 75, 100, 200, 300, 380];
+    const img = fieldToImageData(new Float32Array(values), values.length, 1, "aqi10");
+    values.forEach((v, i) => expect(px(img, i, 0).slice(0, 3)).toEqual(hex(aqiColor(pm10ToAqi(v)))));
+    const fine = fieldToImageData(new Float32Array([100]), 1, 1, "aqi");
+    expect(px(img, 2, 0).slice(0, 3)).not.toEqual(px(fine, 0, 0).slice(0, 3)); // 100: Satisfactory vs Poor
   });
 
   it("diff mode: transparent inside the +/-2 dead band, blue for reduction, red for increase", () => {

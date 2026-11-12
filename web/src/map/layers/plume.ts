@@ -1,5 +1,5 @@
 /**
- * The PM2.5 plume: turning a composed field into pixels, and the deck.gl layer that draws them.
+ * The plume of the pollutant in view: turning a composed field into pixels, and the deck.gl layer that draws them.
  *
  * Geometry. Fields are 0.1 deg cells, row-major from the SOUTH-WEST corner. A BitmapLayer
  * stretches its image linearly between its bounds in Web Mercator, so an image with rows evenly
@@ -7,9 +7,11 @@
  * therefore resampled (`resampleRowsToMercator`) to be evenly spaced in Mercator y before the
  * image is built; the image's row 0 is then the NORTH edge (`fieldToImageData` flips).
  *
- * Colour. `pm25`: colour and base alpha from `pm25Ramp` of the DRY field; alpha scaled by
- * `hazeOpacityFactor` of the haze ratio. `aqi`: CPCB category colour of the HOURLY value through
- * `pm25ToAqi` (indicative: an hourly value on the 24-hour scale). `diff`: composed minus baseline,
+ * Colour. `pm25`: the concentration ramp (the mode's name predates PM10; PM2.5, PM10 and coarse PM
+ * all use this one ug/m3 scale, so switching pollutant compares like with like): colour and base
+ * alpha from `pm25Ramp` of the DRY field; alpha scaled by `hazeOpacityFactor` of the haze ratio.
+ * `aqi` / `aqi10`: CPCB category colour of the HOURLY value through `pm25ToAqi` / `pm10ToAqi`
+ * (indicative: an hourly value on the 24-hour scale). There is no AQI for coarse PM alone. `diff`: composed minus baseline,
  * blue for reduction, red for increase, transparent within +/-2 ug/m3, saturating at +/-100.
  * Missing cells (NaN) are transparent in every mode.
  * A cell with missing HUMIDITY is drawn at dry opacity (humidity missing is not concentration
@@ -17,10 +19,11 @@
  */
 import { BitmapLayer } from "@deck.gl/layers";
 import type { Texture } from "@luma.gl/core";
-import { pm25ToAqi } from "../../lib/aqi";
+import { pm10ToAqi, pm25ToAqi } from "../../lib/aqi";
 import { aqiColor, pm25Ramp } from "../../lib/colors";
 
-export type PlumeMode = "pm25" | "aqi" | "diff";
+export type PlumeMode = "pm25" | "aqi" | "aqi10" | "diff";
+type LutMode = Exclude<PlumeMode, "diff">;
 
 /** The run grid's edges [west, south, east, north] in degrees (from `meta.grid`). */
 export function gridBounds(g: { lon_min: number; lat_min: number; cell: number; nx: number; ny: number }): [number, number, number, number] {
@@ -119,7 +122,7 @@ function aqiAlpha(v: number): number {
   return Math.round(215 * Math.min(1, (v - 5) / 150));
 }
 
-function buildLut(mode: "pm25" | "aqi"): Uint8Array {
+function buildLut(mode: LutMode): Uint8Array {
   const lut = new Uint8Array(LUT_N * 4);
   // transparent entries keep the lowest colour so linear texture filtering does not darken edges
   const low = mode === "pm25" ? pm25Ramp(5.01) : [...hexRgb(aqiColor(0)), 0];
@@ -127,22 +130,24 @@ function buildLut(mode: "pm25" | "aqi"): Uint8Array {
     const v = k / LUT_STEP;
     let rgba: number[];
     if (mode === "pm25") rgba = pm25Ramp(v);
-    else rgba = [...hexRgb(aqiColor(pm25ToAqi(v))), aqiAlpha(v)];
+    else rgba = [...hexRgb(aqiColor(mode === "aqi" ? pm25ToAqi(v) : pm10ToAqi(v))), aqiAlpha(v)];
     if (rgba[3] === 0) rgba = [low[0], low[1], low[2], 0];
     lut.set(rgba, k * 4);
   }
   return lut;
 }
 
-let PM25_LUT: Uint8Array | null = null;
-let AQI_LUT: Uint8Array | null = null;
-const lutFor = (mode: "pm25" | "aqi") =>
-  mode === "pm25" ? (PM25_LUT ??= buildLut("pm25")) : (AQI_LUT ??= buildLut("aqi"));
+const luts = new Map<LutMode, Uint8Array>();
+function lutFor(mode: LutMode): Uint8Array {
+  let lut = luts.get(mode);
+  if (!lut) luts.set(mode, (lut = buildLut(mode)));
+  return lut;
+}
 
 /**
  * Colourise `a*(1-t) + b*t` (b may be null: just `a`) into `out` (RGBA, `nx*ny*4`), flipping rows
  * so row 0 of the image is the northern-most. `hazeA/hazeB` (same blend) scale the alpha in
- * pm25 and aqi modes; a missing side counts as dry (ratio 1), both missing gives factor 0.6.
+ * pm25 and aqi/aqi10 modes; a missing side counts as dry (ratio 1), both missing gives factor 0.6.
  * NaN at either end is transparent. No allocation: call it every animation frame with `out`.
  */
 export function colorizeInto(

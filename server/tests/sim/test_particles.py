@@ -348,3 +348,44 @@ def test_step_bit_identical_with_reference_terrain_lookup(monkeypatch):
     assert fast_stats == ref_stats and sum(s.left_domain for s in ref_stats) > 0
     for f in ("lon", "lat", "age_s", "z_m", "tag", "mass0_kg", "frac"):
         np.testing.assert_array_equal(getattr(fast, f), getattr(ref, f))
+
+
+# --- coarse particles and release cell ---
+
+def test_coarse_tags_deposit_five_times_faster_and_move_identically():
+    from vayu.constants import V_DEP_COARSE_M_S
+    from vayu.domain import TAGS
+    coarse = next(i for i, t in enumerate(TAGS) if t.size == "coarse")
+    p = make(np.array([77.0, 77.0]), 28.0)
+    p.tag = np.array([0, coarse], dtype=np.int16)
+    out, _ = step(p, StubMet(u=3.0, blh=500.0), flat(), 0.0, np.random.default_rng(1))
+    assert out.frac[0] == pytest.approx(math.exp(-V_DEP_M_S / 500.0 * DT_S), rel=1e-6)
+    assert out.frac[1] == pytest.approx(math.exp(-V_DEP_COARSE_M_S / 500.0 * DT_S), rel=1e-6)
+    assert V_DEP_COARSE_M_S == 5 * V_DEP_M_S
+    # size changes nothing but the deposition rate: same wind, same turbulence draw per parcel
+    same = make(np.array([77.0, 77.0]), 28.0)
+    ref, _ = step(same, StubMet(u=3.0, blh=500.0), flat(), 0.0, np.random.default_rng(1))
+    np.testing.assert_array_equal(out.lon, ref.lon)
+    np.testing.assert_array_equal(out.lat, ref.lat)
+
+
+def test_coarse_airborne_mass_after_a_day_is_far_below_fine():
+    from vayu.domain import TAGS
+    coarse = next(i for i, t in enumerate(TAGS) if t.size == "coarse")
+    p = make(np.array([77.0, 77.0]), 28.0)
+    p.tag = np.array([0, coarse], dtype=np.int16)
+    out, _ = run(p, StubMet(blh=500.0), flat(), 24)
+    by_tag = dict(zip(out.tag.tolist(), out.frac.tolist()))
+    assert by_tag[0] == pytest.approx(math.exp(-0.002 / 500 * 86400), rel=1e-4)  # 71 % left
+    assert by_tag[coarse] == pytest.approx(math.exp(-0.01 / 500 * 86400), rel=1e-4)  # 18 % left
+
+
+def test_release_cell_is_recorded_and_survives_moves_keep_and_concat():
+    p = Particles.released([77.05, 70.0, 200.0], [28.05, 10.0, 28.0], [1.0] * 3, [250.0] * 3, [0] * 3)
+    ix, iy = round((77.05 - LON_MIN) / CELL - 0.5), round((28.05 - LAT_MIN) / CELL - 0.5)
+    assert p.cell0.dtype == np.int32
+    assert p.cell0.tolist() == [iy * NX + ix, 40 * NX + 40, -1]  # -1: released outside the grid
+    moved, _ = run(p.keep(np.array([True, True, False])), StubMet(u=10.0), flat(), 3)
+    assert moved.cell0.tolist() == p.cell0[:2].tolist() and moved.lon[0] > 77.5
+    both = Particles.concat([moved, Particles.empty(), p])
+    assert both.cell0.tolist() == p.cell0[:2].tolist() + p.cell0.tolist()

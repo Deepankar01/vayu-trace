@@ -187,8 +187,13 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * 6_371_000 * math.asin(math.sqrt(a))
 
 
-def stations_near(city: City, sleep: Callable[[float], None] = time.sleep) -> list[Station]:
-    """CPCB-provider stations within 25 km with a pm25 sensor, nearest first.
+PARAMETERS = ("pm25", "pm10")
+
+
+def stations_near(city: City, sleep: Callable[[float], None] = time.sleep, *,
+                  parameter: str = PARAMETER) -> list[Station]:
+    """CPCB-provider stations within 25 km with a `parameter` (pm25 or pm10) sensor, nearest
+    first.
 
     Locations within 300 m of an already-listed (nearer) one are merged into it: one physical
     site must not enter the median twice. Cached 7 days (1 hour if the reply was empty).
@@ -204,7 +209,7 @@ def stations_near(city: City, sleep: Callable[[float], None] = time.sleep) -> li
             continue
         sensors = tuple(
             s["id"] for s in loc.get("sensors") or []
-            if (s.get("parameter") or {}).get("name") == PARAMETER
+            if (s.get("parameter") or {}).get("name") == parameter
         )
         coords = loc.get("coordinates") or {}
         if not sensors or "latitude" not in coords or "longitude" not in coords:
@@ -335,8 +340,10 @@ def _sensor_series(sensor_id, start, hours, now, sleep) -> np.ndarray:
 def city_pm25(
     city: City, start: datetime, hours: int,
     now: datetime | None = None, sleep: Callable[[float], None] = time.sleep,
+    *, parameter: str = PARAMETER,
 ) -> MeasuredSeries:
-    """Hourly median PM2.5 (ug/m3, CPCB via OpenAQ) over up to 5 stations within 25 km of `city`.
+    """Hourly median PM2.5 (ug/m3, CPCB via OpenAQ) over up to 5 stations within 25 km of `city`;
+    PM10 with `parameter="pm10"` (same rules, the stations being those with a PM10 sensor).
 
     `start` is tz-aware UTC on a whole hour. Index h is the mean over [start + h, start + h + 1)
     UTC, an overlap-weighted mean of CPCB's one-hour periods (see the module docstring); an hour
@@ -356,9 +363,11 @@ def city_pm25(
         raise ValueError("start must be on a whole hour")
     if hours <= 0:
         raise ValueError("hours must be positive")
+    if parameter not in PARAMETERS:
+        raise ValueError(f"parameter must be one of {PARAMETERS}")
     now = _utc(now) if now is not None else _now()
     end = start + hours * HOUR
-    candidates = [st for st in stations_near(city, sleep)
+    candidates = [st for st in stations_near(city, sleep, parameter=parameter)
                   if _may_overlap(st.first, st.last, start, end)][:MAX_CANDIDATES]
     spans: dict[int, tuple[datetime | None, datetime | None]] = {}
     used: list[np.ndarray] = []

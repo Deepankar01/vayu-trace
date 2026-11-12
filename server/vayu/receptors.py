@@ -44,7 +44,7 @@ assert set(_REGION_NAMES) == set(REGIONS) and set(_FIRE_STATE_NAMES) == set(FIRE
 _FIRE_KINDS = ("fire", "firefc")
 CALM_MS = 0.1  # below this wind speed the direction is undefined (NaN)
 # Bump on any change to how city values are derived from a run (stored runs then rebuild).
-RECEPTORS_VERSION = 1
+RECEPTORS_VERSION = 2
 
 
 def _lookup(tag_id: str):
@@ -66,7 +66,11 @@ def _lookup(tag_id: str):
 class CitySeries:
     """Hourly series for one city; every array has length `run.hours`.
 
-    by_tag      dry PM2.5 (µg/m³) per emission tag
+    by_tag      dry mass concentration (µg/m³) per emission tag: PM2.5 for fine tags, the
+                2.5-10 µm part for `coarse_` tags
+    local_by_tag  the part of `by_tag` released inside the city's own 3x3 cell block ("made
+                here"): by_tag times the run's per-city local fraction. None if the run does
+                not record it.
     fire_age_h  concentration-weighted fire-parcel age (hours); NaN where no fire in the block
     met         wind_ms, wind_dir_deg (direction the wind blows FROM, 0..360), rh (fraction 0..1),
                 temp_c, blh_m, at the city's coordinates in the middle of each output hour
@@ -74,6 +78,7 @@ class CitySeries:
     by_tag: dict[str, np.ndarray]
     fire_age_h: np.ndarray
     met: dict[str, np.ndarray]
+    local_by_tag: dict[str, np.ndarray] | None = None
 
 
 def city_region(city: City) -> str:
@@ -126,11 +131,20 @@ def city_series(run, met: MetField, met_offset_h: float) -> dict[str, CitySeries
     fire_tags = [t for t in run.tags
                  if (tag := _lookup(t)) is not None and tag.kind in _FIRE_KINDS]
     by_tag = {t: np.full((n, hours), np.nan) for t in run.tags}
+    fraction_of = getattr(run, "city_local_fraction", None)
+    local = {t: np.full((n, hours), np.nan) for t in run.tags} if fraction_of else None
+    tag_col = {t.id: i for i, t in enumerate(TAGS)}
     age = np.full((n, hours), np.nan)
     for h in range(hours):
         frame = run.frame(h)
+        frac = fraction_of(h) if local is not None else None
+        if local is not None and frac is None:
+            local = None
         for t in run.tags:
             by_tag[t][:, h] = _nanmean_blocks(frame[t], flat, ok)
+            if local is not None:
+                col = tag_col.get(t)
+                local[t][:, h] = by_tag[t][:, h] * (frac[:, col] if col is not None else 0.0)
         if fire_tags:
             fire = sum(np.nan_to_num(frame[t], nan=0.0) for t in fire_tags)
             a = run.fire_age_h(h)
@@ -153,6 +167,7 @@ def city_series(run, met: MetField, met_offset_h: float) -> dict[str, CitySeries
         c.id: CitySeries(
             by_tag={t: by_tag[t][i] for t in run.tags}, fire_age_h=age[i],
             met={k: v[i] for k, v in met_out.items()},
+            local_by_tag=None if local is None else {t: local[t][i] for t in run.tags},
         )
         for i, c in enumerate(CITIES)
     }

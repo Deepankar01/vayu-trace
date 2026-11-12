@@ -37,3 +37,19 @@ def test_above_250_formula():
 )
 def test_category(aqi, cat):
     assert aqi_category(aqi) == cat
+
+
+@pytest.mark.parametrize(
+    "pm,aqi",
+    [(0, 0), (50, 50), (100, 100), (250, 200), (350, 300), (430, 400), (510, 500), (2000, 500),
+     (175, 150)],
+)
+def test_pm10_breakpoints(pm, aqi):
+    from vayu.aqi import pm10_to_aqi
+    assert round(pm10_to_aqi(pm)) == aqi
+
+
+def test_pm10_nan_and_array():
+    from vayu.aqi import pm10_to_aqi
+    out = pm10_to_aqi(np.array([75.0, np.nan]))
+    assert out[0] == 75.0 and np.isnan(out[1])

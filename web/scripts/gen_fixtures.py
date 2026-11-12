@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from vayu.aqi import pm25_to_aqi
+from vayu.aqi import pm10_to_aqi, pm25_to_aqi
 from vayu.domain import TAGS
 from vayu.encode import HAZE, encode_frame, decode_frame
 from vayu.receptors import arrival, breakdown
@@ -55,7 +55,8 @@ def run_breakdown(inp):
     return {"rows": [enc(asdict(r)) for r in rows]}
 
 
-ids = [t.id for t in TAGS]
+# breakdown takes one value per source: fine tag ids (the caller folds coarse tags into them)
+ids = [t.id for t in TAGS if t.size == "fine"]
 cases = []
 
 
@@ -177,7 +178,7 @@ for name, series, hour, age in arr_inputs:
 (OUT / "breakdown-cases.json").write_text(json.dumps({
     "generated": GENERATED, "cases": cases, "arrival_cases": arrivals,
     "catalogue": [{"id": t.id, "kind": t.kind, "sector": t.sector, "region": t.region,
-                   "label": t.label, "color": t.color} for t in TAGS],
+                   "label": t.label, "color": t.color, "size": t.size} for t in TAGS],
 }, indent=1, ensure_ascii=False) + "\n")
 
 xs = [-5, -0.0, 0, 1e-9, 10, 29.999, 30, 45, 60, 75, 90, 105, 120, 185, 250, 300, 379.9, 380,
@@ -189,6 +190,8 @@ def _inf(x):
 (OUT / "aqi-cases.json").write_text(json.dumps({
     "generated": GENERATED,
     "cases": [{"pm25": _inf(x), "aqi": enc(pm25_to_aqi(dec(x)))} for x in xs],
+    "pm10_cases": [{"pm10": _inf(x), "aqi": enc(pm10_to_aqi(dec(x)))}
+                   for x in xs + [50, 100, 175, 250, 350, 430, 470, 510]],
 }, indent=1) + "\n")
 
 # one real encoded frame: 5 x 3 grid, uneven tag-id lengths (odd byte offsets), a NaN cell

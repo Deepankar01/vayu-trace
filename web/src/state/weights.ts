@@ -4,6 +4,7 @@
  */
 import type { Meta, Sector, TagMeta } from "../api/types";
 import type { Weights } from "../lib/compose";
+import { fineTwin } from "../lib/pollutant";
 
 export interface RegionScenario {
   delhiOddEven: boolean;
@@ -41,7 +42,12 @@ interface Rules {
   userOn: (id: string) => boolean;
 }
 
+/**
+ * A coarse twin has its fine tag's kind, sector and region, and every rule below reads only those
+ * (the Delhi scenarios through the fine id), so a slider or scenario moves both sizes together.
+ */
 function weightOf(tag: TagMeta, r: Rules): number {
+  const fineId = fineTwin(tag.id);
   switch (tag.kind) {
     case "fire":
       return r.fireScaling;
@@ -51,8 +57,8 @@ function weightOf(tag: TagMeta, r: Rules): number {
       return r.userOn(tag.id) ? 1 : 0;
     case "sector": {
       const base = r.sliders[tag.sector as Sector] ?? 1;
-      if (tag.id === "vehicles_delhi_ncr" && r.region.delhiOddEven) return base * ODD_EVEN_VEHICLE_FACTOR;
-      if (tag.id === "dust_delhi_ncr" && r.region.delhiConstructionBan) return base * 0;
+      if (fineId === "vehicles_delhi_ncr" && r.region.delhiOddEven) return base * ODD_EVEN_VEHICLE_FACTOR;
+      if (fineId === "dust_delhi_ncr" && r.region.delhiConstructionBan) return base * 0;
       return base;
     }
     default:

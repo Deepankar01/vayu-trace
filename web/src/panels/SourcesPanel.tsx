@@ -1,6 +1,7 @@
 /**
  * Left panel: sources and what-if controls. Fires are observed (only the global fire scaling is
- * adjustable); the four sector sliders weight every region's tag of that sector 0–200 %. Region
+ * adjustable); the four sector sliders weight every region's tag of that sector 0–200 %, fine and
+ * coarse alike. Road and construction dust is an estimate and is marked so. Region
  * scenarios work on the Delhi NCR tags only. Every change is a weight on already simulated
  * fields: the map, labels and city panel recompose in the browser, nothing is re-simulated.
  */
@@ -11,9 +12,11 @@ import { DASH, fmtISTShort } from "../lib/format";
 import { FIRE_SCALING_RANGE, SLIDER_RANGE } from "../state/weights";
 import { MAX_ADDED_SOURCES } from "./dropKinds";
 import { useApp, useAppStore } from "./storeContext";
-import { Dot, Info, Slider, Switch, cityOf } from "./ui";
+import { Dot, EstimatedTag, Info, Slider, Switch, cityOf } from "./ui";
 
 export const NO_DUST_NOTE = "No baseline dust data — add sites with Drop source";
+export const DUST_ESTIMATE_NOTE =
+  "Dust is an estimate spread from national totals, not measured data. Set it to 0% to switch the estimate off.";
 /** The fire-scaling tooltip; the default comes from the run (`notes.fire_scaling_default`). */
 export function fireScalingTip(def: number): string {
   const n = Number(def.toFixed(2));
@@ -55,6 +58,7 @@ export function SourcesPanel() {
 
   const s = store.getState;
   const dust = meta?.notes.dust_available ?? true;
+  const dustEstimated = dust && meta?.notes.dust_estimated === true;
   const fireDefault = meta?.notes.fire_scaling_default ?? 1;
   const atCap = users.length >= MAX_ADDED_SOURCES;
   const city = cityOf(meta, selected);
@@ -95,7 +99,10 @@ export function SourcesPanel() {
         return (
           <div key={sector} className={disabled ? "sector disabled" : "sector"}>
             <div className="row">
-              <span className="name"><Dot color={color} muted={disabled} />{label}</span>
+              <span className="name">
+                <Dot color={color} muted={disabled} />{label}
+                {sector === "dust" && dustEstimated && <EstimatedTag source={meta?.notes.dust_source ?? ""} />}
+              </span>
               <span className="value-wrap">
                 {!disabled && v !== 1 && (
                   <button type="button" className="reset-one" aria-label={`Reset ${label} to 100%`} onClick={() => s().setSlider(sector, 1)}>↺</button>
@@ -109,6 +116,7 @@ export function SourcesPanel() {
             />
             {note && <p className="note">{note}</p>}
             {disabled && <p className="note warn">{NO_DUST_NOTE}</p>}
+            {sector === "dust" && dustEstimated && <p className="note">{DUST_ESTIMATE_NOTE}</p>}
           </div>
         );
       })}

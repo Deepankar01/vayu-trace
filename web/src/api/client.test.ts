@@ -53,6 +53,30 @@ describe("ApiClient URLs", () => {
     ]);
   });
 
+  it("measured and CAMS for PM10 add pollutant=pm10 after build; PM2.5 sends none", async () => {
+    const { client, urls } = setup([json({ values: [] }), json({ values: [] }), json({ values: [] }), json({ values: [] })]);
+    await client.getMeasured("2026-11-10", "delhi", undefined, "pm10");
+    await client.getCams("2026-11-10", "delhi", undefined, "pm10");
+    await client.getMeasured("2026-11-10", "delhi", undefined, "pm25");
+    await client.getCams("2026-11-10", "delhi");
+    expect(urls).toEqual([
+      "/api/runs/2026-11-10/cities/delhi/measured?build=b1&pollutant=pm10",
+      "/api/runs/2026-11-10/cities/delhi/cams?build=b1&pollutant=pm10",
+      "/api/runs/2026-11-10/cities/delhi/measured?build=b1",
+      "/api/runs/2026-11-10/cities/delhi/cams?build=b1",
+    ]);
+  });
+
+  it("a 409 on a PM10 request refreshes the build once and repeats it with the new build", async () => {
+    const { client, urls, onRebuilt } = setup([json({ detail: "run was rebuilt", build_id: "b2" }, 409), json({ values: [7] })]);
+    expect(await client.getMeasured("2026-11-10", "delhi", undefined, "pm10")).toEqual({ values: [7] });
+    expect(onRebuilt).toHaveBeenCalledTimes(1);
+    expect(urls).toEqual([
+      "/api/runs/2026-11-10/cities/delhi/measured?build=b1&pollutant=pm10",
+      "/api/runs/2026-11-10/cities/delhi/measured?build=b2&pollutant=pm10",
+    ]);
+  });
+
   it("removes an added source with DELETE", async () => {
     const { client, fetchMock } = setup([json({ removed: "user_2", build_id: "b1" })]);
     expect(await client.deleteSource("2026-11-10", "user_2")).toEqual({ removed: "user_2", build_id: "b1" });

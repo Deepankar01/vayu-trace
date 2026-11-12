@@ -115,21 +115,47 @@ def test_split_by_region_conserves_mass():
     assert grids["vehicles"].sum() > grids["vehicles"][land].sum()  # something was dropped
 
 
-def test_dust_zero_when_unavailable():
+def test_split_by_region_treats_missing_grids_as_zero():
     em = inventory.split_by_region({s: np.ones((NY, NX)) for s in ("vehicles", "industry", "residential")})
     for region in REGIONS:
         assert em.hour(f"dust_{region}", 0)[2].size == 0
-    assert inventory.DUST_AVAILABLE is False
+        assert em.hour(f"coarse_vehicles_{region}", 0)[2].size == 0
 
 
-def test_all_24_tags_present(tmp_path, monkeypatch):
+def test_coarse_is_pm10_minus_pm25_never_negative():
+    pm25 = {"vehicles": np.array([[1.0, 5.0]])}
+    pm10 = {"vehicles": np.array([[4.0, 3.0]])}
+    np.testing.assert_array_equal(inventory.coarse_grids(pm25, pm10)["coarse_vehicles"], [[3.0, 0.0]])
+
+
+def test_dust_estimate_spreads_teri_totals_over_india_by_the_proxy():
+    from vayu import constants as C
+    from vayu.domain import india_mask
+    proxy = np.ones((NY, NX))
+    proxy[india_mask()] = 2.0
+    proxy[200, 150] = 6.0  # a busier cell inside India (Madhya Pradesh)
+    assert india_mask()[200, 150]
+    fine, coarse = inventory.dust_grids(proxy)
+    kt = lambda g: g.sum() * inventory.HOURS_PER_YEAR / 1e6
+    assert kt(fine) == pytest.approx(C.DUST_ROAD_PM25_KT + C.DUST_CONSTRUCTION_PM25_KT)
+    assert kt(fine + coarse) == pytest.approx(C.DUST_ROAD_PM10_KT + C.DUST_CONSTRUCTION_PM10_KT)
+    assert not fine[~india_mask()].any() and not coarse[~india_mask()].any()
+    assert coarse[200, 150] == pytest.approx(3 * coarse[200, 151])  # proportional to the proxy
+    zero = inventory.dust_grids(np.zeros((NY, NX)))
+    assert not zero[0].any() and not zero[1].any()
+    assert inventory.DUST_ESTIMATED is True
+
+
+def test_all_48_tags_present(tmp_path, monkeypatch):
     install_fake_inventory(tmp_path)
     em = inventory.inventory_emissions()
     sector_tags = sorted(t.id for t in TAGS if t.kind == "sector")
-    assert len(sector_tags) == 24 == len(SECTORS) * len(REGIONS)
+    assert len(sector_tags) == 48 == 2 * len(SECTORS) * len(REGIONS)
     assert em.tags == sector_tags
     notes = inventory.inventory_notes()
-    assert notes["dust_available"] is False and notes["year"] == 2022 and "EDGAR" in notes["source"]
+    assert notes["dust_available"] is True and notes["dust_estimated"] is True
+    assert "TERI" in notes["dust_source"]
+    assert notes["year"] == 2022 and "EDGAR" in notes["source"]
 
 
 def install_fake_inventory(tmp_path):
@@ -170,7 +196,7 @@ def test_cache_rebuilt_when_sector_mapping_changes(tmp_path, monkeypatch):
     monkeypatch.setattr(inventory, "EDGAR_SECTORS", {**inventory.EDGAR_SECTORS, "industry": ("ENE",)})
     em = inventory.inventory_emissions()
     assert total(em, "industry_rest_of_india") < full
-    assert len(em.tags) == 24
+    assert len(em.tags) == 48
 
 
 def test_cache_rebuilt_when_conversion_changes(tmp_path, monkeypatch):

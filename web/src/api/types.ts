@@ -10,6 +10,9 @@ export interface TagMeta {
   region: string | null;
   label: string;
   color: string;
+  /** "fine": PM2.5. "coarse": the 2.5-10 um part of PM10 (id = "coarse_" + the fine tag's id,
+   *  same kind/sector/region). User sources are fine. */
+  size: "fine" | "coarse";
   /** User sources only: where and when it was placed (stored by the server, restored on reload). */
   source?: SourceRequest;
 }
@@ -29,8 +32,11 @@ export interface CityMeta {
   lat: number;
   lon: number;
   region: string;
-  /** Dry PM2.5 (ug/m3) per tag and hour. Tags that are zero all run long are absent (= zeros). */
+  /** Dry concentration (ug/m3) per tag and hour: PM2.5 for fine tags, 2.5-10 um mass for coarse
+   *  tags. Tags that are zero all run long are absent (= zeros). */
   by_tag: Record<string, (number | null)[]>;
+  /** The part of `by_tag[tag]` emitted inside the city's own ~30 km square. Absent tag = zeros. */
+  by_tag_local: Record<string, (number | null)[]>;
   fire_age_h: (number | null)[];
   met: CityMet;
 }
@@ -38,6 +44,13 @@ export interface CityMeta {
 export interface MetaNotes {
   blh_estimated: boolean;
   dust_available: boolean;
+  /** The dust sector is an estimate (national totals spread by a proxy), not gridded data. */
+  dust_estimated: boolean;
+  /** One sentence saying where the dust estimate comes from. */
+  dust_source: string;
+  /** Dry deposition velocities the model uses for fine and coarse particles (m/s). */
+  v_dep_fine_m_s: number;
+  v_dep_coarse_m_s: number;
   inventory_source: string;
   inventory_year: number | null;
   fire_scaling_default: number;
@@ -92,7 +105,11 @@ export interface WindField {
   v: (number | null)[];
 }
 
+/** What the measured and CAMS endpoints can serve (`?pollutant=`; pm25 is the default). */
+export type DataPollutant = "pm25" | "pm10";
+
 export interface MeasuredResponse {
+  pollutant?: DataPollutant;
   values: (number | null)[];
   station_count: number;
   source: string;

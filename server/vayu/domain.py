@@ -55,6 +55,8 @@ class Tag:
     region: str
     label: str
     color: str
+    # "fine": PM2.5. "coarse": the 2.5-10 um part of PM10 (ids start with COARSE_PREFIX).
+    size: Literal["fine", "coarse"] = "fine"
 
 
 def _build_tags() -> tuple[Tag, ...]:
@@ -66,9 +68,13 @@ def _build_tags() -> tuple[Tag, ...]:
         for sec in SECTORS
         for reg in REGIONS
     ]
+    # Coarse twins come after every fine tag, so fine tag indices never change.
+    tags += [Tag(COARSE_PREFIX + t.id, t.kind, t.sector, t.region, t.label, t.color, "coarse")
+             for t in list(tags)]
     return tuple(tags)
 
 
+COARSE_PREFIX = "coarse_"
 TAGS: tuple[Tag, ...] = _build_tags()
 
 

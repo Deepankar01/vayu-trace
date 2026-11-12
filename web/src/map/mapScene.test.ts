@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WindField } from "../api/types";
 import { makeMeta } from "../test-utils/meta";
 import { testStore } from "../test-utils/panels";
-import { MapScene, type SceneEnv } from "./mapScene";
+import { MapScene, plumeModeOf, type SceneEnv } from "./mapScene";
 
 const ENV: SceneEnv = {
   ready: true, flatBeforeId: undefined, zoom: 5, armedForDrop: false, device: null,
@@ -47,6 +47,25 @@ function setup() {
 }
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+describe("plumeModeOf", () => {
+  const layers = (pm25: boolean, aqi: boolean) => ({ pm25, aqi, wind: true, fires: true, terrain: false });
+  const mode = (pollutant: "pm25" | "pm10" | "coarse", pm25: boolean, aqi: boolean, compareBaseline = false) =>
+    plumeModeOf({ layers: layers(pm25, aqi), compareBaseline, pollutant });
+  it("PM2.5 is as before: concentration, AQI, difference, or nothing", () => {
+    expect(mode("pm25", true, false)).toBe("pm25");
+    expect(mode("pm25", false, true)).toBe("aqi");
+    expect(mode("pm25", false, true, true)).toBe("diff");
+    expect(mode("pm25", false, false)).toBeNull();
+  });
+  it("PM10 AQI uses the PM10 breakpoints; coarse PM has no AQI and falls back to concentration", () => {
+    expect(mode("pm10", false, true)).toBe("aqi10");
+    expect(mode("pm10", true, false)).toBe("pm25");
+    expect(mode("coarse", false, true)).toBe("pm25");
+    expect(mode("coarse", false, true, true)).toBe("diff");
+    expect(mode("coarse", false, false)).toBeNull();
+  });
+});
 
 describe("MapScene", () => {
   it("draws wind and the path for the current build, and drops both (aborting the path request) on a new build", async () => {

@@ -68,6 +68,21 @@ export function Dot({ color, muted }: { color: string; muted?: boolean }) {
   return <i className={`dot${muted ? " dot-muted" : ""}`} style={{ background: color }} aria-hidden="true" />;
 }
 
+export const ESTIMATED_TAG = "estimated";
+
+/**
+ * Marks the dust sector wherever it appears while the run's dust is an estimate
+ * (`notes.dust_estimated`); `source` (`notes.dust_source`) says what the estimate is made of, as
+ * the tooltip and the accessible description.
+ */
+export function EstimatedTag({ source }: { source: string }) {
+  return (
+    <span className="est-tag" data-testid="estimated-tag" role="note" title={source} aria-description={source}>
+      {ESTIMATED_TAG}
+    </span>
+  );
+}
+
 export const FORECAST_TAG = "forecast";
 export const FIRES_ASSUMED_TAG = "fires assumed";
 

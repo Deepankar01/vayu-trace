@@ -4,6 +4,7 @@
  */
 import { HAZE, NAN_CODE, type Frame } from "../api/decode";
 import type { CityMeta } from "../api/types";
+import { inPollutant, type Pollutant } from "./pollutant";
 
 export type Weights = Record<string, number>;
 
@@ -20,10 +21,15 @@ export type Weights = Record<string, number>;
  * - `__haze` is a multiplicative factor, not a concentration, and is never summed. With
  *   `opts.haze` the result is multiplied by it (drawing opacity only; a missing haze cell
  *   makes the cell NaN; a frame without `__haze` throws, the server always sends it).
+ * - With `opts.pollutant` only that pollutant's tags are summed (see `inPollutant`); the others
+ *   are left out entirely, so they neither need a weight nor spread their missing cells.
  */
-export function composeField(frame: Frame, weights: Weights, opts: { haze?: boolean } = {}): Float32Array {
+export function composeField(
+  frame: Frame, weights: Weights, opts: { haze?: boolean; pollutant?: Pollutant } = {},
+): Float32Array {
   const out = new Float32Array(frame.nx * frame.ny);
-  const ids = [...frame.tags.keys()].filter((id) => id !== HAZE).sort();
+  const p = opts.pollutant;
+  const ids = [...frame.tags.keys()].filter((id) => id !== HAZE && (p === undefined || inPollutant(id, p))).sort();
   for (const id of ids) {
     const w = weights[id];
     if (w === undefined) throw new Error(`no weight for source tag '${id}'`);

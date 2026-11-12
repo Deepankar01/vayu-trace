@@ -111,7 +111,8 @@ def test_parcel_budget_catalogue():
     assert parcels_per_tag_hour("dust_rest_of_india") == 400
     assert parcels_per_tag_hour("industry_bihar") == 100
     assert parcels_per_tag_hour("fire_other") == 100
-    assert sum(parcels_per_tag_hour(t) == 400 for t in ALL_TAG_IDS) == 4
+    assert parcels_per_tag_hour("coarse_dust_rest_of_india") == 400
+    assert sum(parcels_per_tag_hour(t) == 400 for t in ALL_TAG_IDS) == 8  # fine and coarse
 
 
 # --- fields ---
@@ -350,6 +351,9 @@ def test_release_skips_zero_total_tag_hour():
 
 
 EXPECTED_SNAPSHOT_KEYS = sorted([
+    "V_DEP_COARSE_M_S", "FIRE_COARSE_PER_PM25_CROP", "FIRE_COARSE_PER_PM25_VEG",
+    "DUST_ROAD_PM10_KT", "DUST_ROAD_PM25_KT", "DUST_CONSTRUCTION_PM10_KT",
+    "DUST_CONSTRUCTION_PM25_KT", "inventory.LOADER_VERSION",
     "DT_S", "K_H_M2_S", "V_DEP_M_S", "WASHOUT_A", "WASHOUT_B", "Z_RELAX_S", "MIN_MASS_FRACTION",
     "HAZE_GROWTH_COEFF", "HAZE_RH_CAP", "KERNEL_AGE_H", "KERNEL_HALF_WIDTH",
     "FIRE_PEAK_HOUR_IST", "FIRE_SIGMA_H", "BIOMASS_KG_PER_MJ", "EF_PM25_CROP_G_PER_KG",
@@ -480,7 +484,7 @@ def test_run_date_builds_spun_up_window(offline, tmp_path):
     assert pointer == {"run_id": res.run_id}
     meta = json.loads((res.out_dir / "run.json").read_text())
     assert meta["complete"] is True and meta["start"] == START.isoformat()
-    assert meta["format_version"] == 3 and meta["frame_semantics"] == "hour_mean_trapezoid"
+    assert meta["format_version"] == 4 and meta["frame_semantics"] == "hour_mean_trapezoid"
     assert meta["made_at"] == NOW.isoformat()
     assert meta["constants"] == run.constants_snapshot()
     assert meta["constants"]["DT_S"] == 600 and meta["constants"]["PARTICLES_PER_TAG_HOUR"] == 5
@@ -651,3 +655,45 @@ def test_cities_digest_tracks_ids_and_coordinates(monkeypatch):
     monkeypatch.setattr(run, "CITIES", moved)
     assert run.cities_digest() != before
     assert run.constants_snapshot()["cities.digest"] == run.cities_digest()
+
+
+# --- made here: per-city local fraction ---
+
+def test_city_local_fraction_separates_made_here_from_arrived(tmp_path):
+    from vayu.cities import BY_ID, CITIES
+    from vayu.domain import cell_index
+    delhi = BY_ID["delhi"]
+    ix, iy = (int(a) for a in cell_index(delhi.lon, delhi.lat))
+    em = Emissions()
+    for h in range(8):
+        em.add("vehicles_delhi_ncr", h, [iy], [ix], [1.0])  # inside Delhi's 3 x 3 block
+        em.add("industry_haryana", h, [iy], [ix - 6], [1.0])  # ~60 km upwind (west)
+    res = simulate(em, StubMet(hours=20, u=4.0), flat(), START, 6, tmp_path / "run", spinup_h=2,
+                   particles_per_tag_hour=200)
+    ci = [c.id for c in CITIES].index("delhi")
+    frac = res.city_local_fraction(5)
+    assert frac.shape == (len(CITIES), len(TAGS))
+    local_tag, far_tag = ALL_TAG_IDS.index("vehicles_delhi_ncr"), ALL_TAG_IDS.index("industry_haryana")
+    assert frac[ci, local_tag] == 1.0  # every parcel of it in the block was released there
+    assert frac[ci, far_tag] == 0.0  # present in the block, released outside it
+    assert frac[ci, ALL_TAG_IDS.index("fire_punjab")] == 0.0  # no parcels: 0, not NaN
+    with np.load(res.out_dir / "frame_005.npz") as z:
+        assert z["city_total"][ci, far_tag] > 0  # it did arrive
+        assert z["city_local"][ci, far_tag] == 0
+
+
+def test_coarse_tag_reaches_less_far_than_its_fine_twin(tmp_path):
+    em = Emissions()
+    for h in range(30):
+        em.add("dust_punjab", h, [240], [100], [1.0])
+        em.add("coarse_dust_punjab", h, [240], [100], [1.0])
+    res = simulate(em, StubMet(hours=40, u=5.0, blh=300.0), flat(), START, 2, tmp_path / "run",
+                   spinup_h=28, particles_per_tag_hour=300)
+    f = res.frame(1)
+    area = cell_area_m2()[:, None]
+    fine, coarse = f["dust_punjab"] * area, f["coarse_dust_punjab"] * area  # ~ airborne mass
+    near = slice(100, 103)  # the source cell and just downwind
+    assert coarse[:, near].sum() == pytest.approx(fine[:, near].sum(), rel=0.15)
+    far = slice(140, 320)  # more than ~400 km downwind
+    assert fine[:, far].sum() > 0
+    assert coarse[:, far].sum() < 0.35 * fine[:, far].sum()

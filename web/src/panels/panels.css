@@ -139,6 +139,55 @@ button:disabled {
 .clock {
   color: var(--text);
 }
+/* the pollutant choice: one joined control, so three chips cost little width */
+.chip-group.joined {
+  gap: 0;
+}
+.chip-group.joined .chip {
+  border-radius: 0;
+  padding-left: 9px;
+  padding-right: 9px;
+}
+.chip-group.joined .chip + .chip {
+  margin-left: -1px;
+}
+.chip-group.joined .chip:first-child {
+  border-radius: 999px 0 0 999px;
+}
+.chip-group.joined .chip:last-child {
+  border-radius: 0 999px 999px 0;
+}
+.chip-group.joined .chip.on {
+  position: relative; /* its accent border sits above the neighbours' */
+  z-index: 1;
+}
+.chip-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.chip-btn:disabled:hover {
+  color: var(--mute);
+  border-color: var(--line);
+}
+/* "estimated" marker on the dust sector */
+.est-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid rgba(217, 181, 106, 0.55);
+  border-radius: 999px;
+  color: #d9b56a;
+  font-size: 9.5px;
+  font-style: normal;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+  vertical-align: 1px;
+  cursor: help;
+}
+.legend.made-here .mh-value {
+  color: var(--mute);
+  margin-right: 10px;
+}
 .date-chip {
   padding: 3px 10px;
   display: flex;
@@ -1437,7 +1486,9 @@ button:disabled {
     display: none;
   }
 }
-@media (max-width: 1360px) {
+/* The compact bar starts at 1500 px: with the pollutant control the full-size chips no longer
+   leave room for the humidity readout at 1440. */
+@media (max-width: 1500px) {
   .top .chip-group,
   .readouts {
     gap: 6px;

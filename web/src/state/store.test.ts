@@ -258,6 +258,61 @@ describe("selectCity: measured and CAMS", () => {
     expect(h.calls.filter((c) => c.includes("delhi/measured"))).toHaveLength(1);
   });
 
+  it("PM2.5 view asks for nothing about PM10", async () => {
+    const h = harness(readyServer());
+    await h.get().startRun("2026-11-10");
+    h.get().selectCity("delhi");
+    await flush();
+    expect(h.calls.some((c) => c.includes("pollutant="))).toBe(false);
+    expect(h.get().measuredPm10).toEqual({});
+    expect(h.get().camsPm10).toEqual({});
+  });
+
+  it("switching pollutant fetches what the view needs, keyed by pollutant, and never refetches what is loaded", async () => {
+    const h = harness(readyServer(() => makeMeta(), (u) => {
+      if (u.includes("/measured") && u.includes("pollutant=pm10")) return json({ pollutant: "pm10", values: [10, 20], station_count: 2, source: "s", aligned: "a" });
+      if (u.includes("/cams") && u.includes("pollutant=pm10")) return json({ values: [40, 50] });
+      return undefined;
+    }));
+    await h.get().startRun("2026-11-10");
+    h.get().selectCity("delhi");
+    await flush();
+    h.get().setPollutant("pm10");
+    expect(h.get().pollutant).toBe("pm10");
+    expect(h.get().measuredPm10.delhi.status).toBe("loading");
+    expect(h.get().camsPm10.delhi.status).toBe("loading");
+    await flush();
+    // each pollutant in its own map: PM10 never overwrites PM2.5
+    expect(h.get().measured.delhi.values).toEqual([1, 2]);
+    expect(h.get().measuredPm10.delhi).toEqual({ status: "ready", values: [10, 20], stationCount: 2, error: null });
+    expect(h.get().cams.delhi.values).toEqual([4, 5]);
+    expect(h.get().camsPm10.delhi.values).toEqual([40, 50]);
+    expect(h.calls).toContain(`GET ${RUN}/cities/delhi/measured?build=b1&pollutant=pm10`);
+    expect(h.calls).toContain(`GET ${RUN}/cities/delhi/cams?build=b1&pollutant=pm10`);
+    const before = h.calls.length;
+    h.get().setPollutant("coarse"); // needs CPCB PM10 and PM2.5: both loaded, and no CAMS
+    h.get().setPollutant("pm25");
+    h.get().setPollutant("pm10");
+    await flush();
+    expect(h.calls.length).toBe(before);
+  });
+
+  it("coarse view from the start: CPCB PM2.5 and PM10, no CAMS at all", async () => {
+    const h = harness(readyServer());
+    h.get().setPollutant("coarse");
+    await h.get().startRun("2026-11-10");
+    expect(h.get().pollutant).toBe("coarse"); // a view setting: a new run keeps it
+    h.get().selectCity("delhi");
+    await flush();
+    const cityCalls = h.calls.filter((c) => c.includes("/cities/delhi/")).sort();
+    expect(cityCalls).toEqual([
+      `GET ${RUN}/cities/delhi/measured?build=b1`,
+      `GET ${RUN}/cities/delhi/measured?build=b1&pollutant=pm10`,
+    ]);
+    expect(h.get().cams).toEqual({});
+    expect(h.get().camsPm10).toEqual({});
+  });
+
   it("aborts the previous city's in-flight requests and returns them to idle", async () => {
     const signals: AbortSignal[] = [];
     const h = harness(readyServer(() => makeMeta(), pendingByCity(signals)));
@@ -493,8 +548,8 @@ it("restores user sources listed in meta, enabled, with the placement the server
   const source = { kind: "brick_kiln", lon: 77.1, lat: 28.4, amount: 2, start_hour: 3, duration_h: 6 };
   meta.tags = [
     ...meta.tags,
-    { id: "user_1", kind: "user", sector: null, region: null, label: "Old", color: "#999", source },
-    { id: "user_2", kind: "user", sector: null, region: null, label: "Bare", color: "#999" },
+    { id: "user_1", kind: "user", sector: null, region: null, label: "Old", color: "#999", size: "fine", source },
+    { id: "user_2", kind: "user", sector: null, region: null, label: "Bare", color: "#999", size: "fine" },
   ];
   const h = harness(readyServer(() => meta));
   await h.get().startRun("2026-11-10");

@@ -1,4 +1,4 @@
-"""Hourly PM2.5 emissions from VIIRS fire radiative power (FRP).
+"""Hourly PM2.5 and coarse (2.5-10 um) emissions from VIIRS fire radiative power (FRP).
 
 Method, per UTC day:
  1. Each daytime detection's FRP is divided by the diurnal profile g(t) at its acquisition time
@@ -15,6 +15,7 @@ Method, per UTC day:
  2. Daily energy (MJ) = FRP_peak (MW) * sqrt(2 pi) * sigma * 3600 s, the integral of the Gaussian.
  3. kg PM2.5 = MJ * BIOMASS_KG_PER_MJ * EF (g/kg) / 1000, EF by the cell's fire state.
  4. The daily mass is spread over UTC hours by the Gaussian profile, renormalised to sum to 1.
+ 5. Coarse smoke = PM2.5 * FIRE_COARSE_PER_PM25_{CROP,VEG} (constants.py), under `coarse_` tags.
 """
 import math
 from datetime import UTC, date, datetime, timedelta
@@ -23,7 +24,7 @@ import numpy as np
 
 from vayu import constants as C
 from vayu.clients import firms
-from vayu.domain import FIRE_STATES, NX, NY, cell_index, fire_state_mask, inside
+from vayu.domain import COARSE_PREFIX, FIRE_STATES, NX, NY, cell_index, fire_state_mask, inside
 from vayu.emissions import Emissions
 
 PEAK_HOUR_UTC = C.FIRE_PEAK_HOUR_IST - 5.5  # IST = UTC + 5:30
@@ -46,6 +47,11 @@ def hourly_shares() -> np.ndarray:
 def _ef_grid() -> np.ndarray:
     crop = np.isin(fire_state_mask(), [FIRE_STATES.index(s) for s in C.CROP_STATES])
     return np.where(crop, C.EF_PM25_CROP_G_PER_KG, C.EF_PM25_VEG_G_PER_KG)
+
+
+def _coarse_ratio_grid() -> np.ndarray:
+    crop = np.isin(fire_state_mask(), [FIRE_STATES.index(s) for s in C.CROP_STATES])
+    return np.where(crop, C.FIRE_COARSE_PER_PM25_CROP, C.FIRE_COARSE_PER_PM25_VEG)
 
 
 def _daily_kg(day: date) -> np.ndarray:
@@ -93,7 +99,8 @@ def _add_day(em: Emissions, prefix: str, field: np.ndarray, hour_indices: list[t
 
 
 def fire_emissions(start: datetime, hours: int, now: datetime) -> Emissions:
-    """Fire PM2.5 for hours [start + h, start + h + 1), h in range(hours).
+    """Fire PM2.5 (and coarse smoke under `coarse_` tags) for hours [start + h, start + h + 1),
+    h in range(hours).
 
     Hours in complete UTC days before `now`'s day are observed (`fire_{state}`). Hours from 00:00
     UTC of `now`'s day on use the mean of the three complete days before it (`firefc_{state}`).
@@ -122,9 +129,13 @@ def fire_emissions(start: datetime, hours: int, now: datetime) -> Emissions:
             fields[d] = _daily_kg(d)
         return fields[d]
 
+    ratio = _coarse_ratio_grid()
     for d, idx in observed.items():
         _add_day(em, "fire", field(d), idx, shares)
+        _add_day(em, COARSE_PREFIX + "fire", field(d) * ratio, idx, shares)
     if forecast:
-        basis = [field(today - timedelta(days=k)) for k in range(1, FORECAST_BASIS_DAYS + 1)]
-        _add_day(em, "firefc", np.mean(basis, axis=0), forecast, shares)
+        basis = np.mean([field(today - timedelta(days=k))
+                         for k in range(1, FORECAST_BASIS_DAYS + 1)], axis=0)
+        _add_day(em, "firefc", basis, forecast, shares)
+        _add_day(em, COARSE_PREFIX + "firefc", basis * ratio, forecast, shares)
     return em

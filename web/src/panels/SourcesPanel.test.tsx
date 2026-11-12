@@ -4,7 +4,7 @@ import { useDropStore } from "../map/dropStore";
 import type { UserSource } from "../state/store";
 import { makeMeta } from "../test-utils/meta";
 import { renderPanel } from "../test-utils/panels";
-import { SourcesPanel } from "./SourcesPanel";
+import { DUST_ESTIMATE_NOTE, SourcesPanel } from "./SourcesPanel";
 
 const notes = (over: Partial<ReturnType<typeof makeMeta>["notes"]>) => ({ ...makeMeta().notes, ...over });
 const user = (id: string, enabled = true): UserSource => ({
@@ -34,6 +34,31 @@ describe("SourcesPanel", () => {
     renderPanel(<SourcesPanel />);
     expect(screen.getByRole("slider", { name: "Road and construction dust" })).toBeEnabled();
     expect(screen.queryByText("No baseline dust data — add sites with Drop source")).toBeNull();
+  });
+
+  it("marks the dust slider 'estimated' with the source as tooltip and description, and says so in a sentence", () => {
+    const { store } = renderPanel(<SourcesPanel />);
+    const tag = screen.getByTestId("estimated-tag");
+    const source = store.getState().meta!.notes.dust_source;
+    expect(tag).toHaveTextContent("estimated");
+    expect(tag).toHaveAttribute("title", source);
+    expect(tag).toHaveAttribute("aria-description", source);
+    expect(tag.closest(".sector")).toContainElement(screen.getByRole("slider", { name: "Road and construction dust" }));
+    expect(screen.getByText(DUST_ESTIMATE_NOTE)).toBeInTheDocument();
+    expect(DUST_ESTIMATE_NOTE).toMatch(/estimate spread from national totals, not measured data/);
+    // 0 % switches the estimate off
+    fireEvent.change(screen.getByRole("slider", { name: "Road and construction dust" }), { target: { value: "0" } });
+    expect(store.getState().sliders.dust).toBe(0);
+    expect(store.getState().weights()).toMatchObject({ dust_delhi_ncr: 0, coarse_dust_delhi_ncr: 0 });
+  });
+
+  it("no 'estimated' marker when the run's dust is not an estimate, or when there is no dust at all", () => {
+    const { unmount } = renderPanel(<SourcesPanel />, { meta: makeMeta({ notes: notes({ dust_estimated: false }) }) });
+    expect(screen.queryByTestId("estimated-tag")).toBeNull();
+    expect(screen.queryByText(DUST_ESTIMATE_NOTE)).toBeNull();
+    unmount();
+    renderPanel(<SourcesPanel />, { meta: makeMeta({ notes: notes({ dust_available: false }) }) });
+    expect(screen.queryByTestId("estimated-tag")).toBeNull();
   });
 
   it("hides 'Fires stop now' when no fire hours are assumed, shows it otherwise", () => {

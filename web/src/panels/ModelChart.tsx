@@ -1,6 +1,7 @@
 /**
- * "Model vs measured" over the run window, hourly PM2.5 (µg/m³): our model (accent; dashed in
- * forecast hours), CPCB (white dots), Copernicus CAMS (thin blue line), the playhead, and a
+ * "Model vs measured" over the run window, hourly values of the pollutant in view (µg/m³): our
+ * model (accent; dashed in forecast hours), CPCB (white dots), Copernicus CAMS (thin blue line;
+ * left out with `showCams` false, as in the coarse view where no CAMS series exists), the playhead, and a
  * shaded band where fire emissions are assumed. Hover reads the three values at an hour; a click
  * moves the playhead there. Plain SVG; the scale maths is in chartScale.ts.
  */
@@ -29,6 +30,12 @@ export interface ModelChartProps {
   /** CAMS failed to load: the legend says so, with this error as its tooltip. */
   camsError?: string | null;
   measuredNote: string | null;
+  /** What the series are, for the accessible name (default "PM2.5"). */
+  pollutant?: string;
+  /** Legend name of the measured dots (default "CPCB"). */
+  measuredLabel?: string;
+  /** False leaves the Copernicus line, readout and legend entry out entirely (default true). */
+  showCams?: boolean;
   hour: number;
   forecastFrom: number | null;
   firesAssumedFrom: number | null;
@@ -44,14 +51,15 @@ export function ModelChart(p: ModelChartProps) {
   const [hover, setHover] = useState<number | null>(null);
   const n = p.hours.length;
   const last = Math.max(1, n - 1);
-  const { ticks, top } = yTicks(seriesMax([p.sim, p.measured, p.cams]));
+  const showCams = p.showCams !== false;
+  const { ticks, top } = yTicks(seriesMax([p.sim, p.measured, showCams ? p.cams : null]));
   const x = linear(0, last, L, L + PW);
   const y = linear(0, top, T + PH, T);
   const ff = p.forecastFrom;
   const solid = runs(p.sim, 0, ff ?? n - 1);
   // solid through forecast_from, dashed from it: the two meet at the first forecast hour
   const dashed = ff === null ? [] : runs(p.sim, ff, n - 1);
-  const cams = p.cams ? runs(p.cams, 0, n - 1) : [];
+  const cams = showCams && p.cams ? runs(p.cams, 0, n - 1) : [];
   const h = hover ?? Math.floor(p.hour);
 
   const hourAt = (e: MouseEvent<SVGSVGElement>) => {
@@ -69,11 +77,11 @@ export function ModelChart(p: ModelChartProps) {
         <span className="mute">{n ? `${fmtISTShort(p.hours[h])} IST` : DASH}</span>
         <span><i className="key key-model" />{fmtNumber(val(p.sim, h))}</span>
         <span><i className="key key-cpcb" />{fmtNumber(val(p.measured, h))}</span>
-        <span><i className="key key-cams" />{fmtNumber(val(p.cams, h))}</span>
+        {showCams && <span><i className="key key-cams" />{fmtNumber(val(p.cams, h))}</span>}
       </div>
       <svg
         viewBox={`0 0 ${W} ${H}`} width="100%" role="img"
-        aria-label="Model vs measured: hourly PM2.5 over the run window. Click to move the playhead."
+        aria-label={`Model vs measured: hourly ${p.pollutant ?? "PM2.5"} over the run window. Click to move the playhead.`}
         onPointerMove={(e) => setHover(hourAt(e))} onPointerLeave={() => setHover(null)}
         onClick={(e) => p.onSeek(hourAt(e))}
       >
@@ -115,8 +123,8 @@ export function ModelChart(p: ModelChartProps) {
       </svg>
       <figcaption className="chart-legend">
         <span><i className="key key-model" />our model</span>
-        <span><i className="key key-cpcb" />CPCB{p.measuredNote ? <em> {p.measuredNote}</em> : null}</span>
-        {p.camsError ? (
+        <span><i className="key key-cpcb" />{p.measuredLabel ?? "CPCB"}{p.measuredNote ? <em> {p.measuredNote}</em> : null}</span>
+        {!showCams ? null : p.camsError ? (
           <span title={p.camsError} data-testid="cams-failed"><i className="key key-cams" />Copernicus: failed to load</span>
         ) : (
           <span><i className="key key-cams" />Copernicus CAMS{p.camsNote ? <em> {p.camsNote}</em> : null}</span>

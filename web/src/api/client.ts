@@ -10,7 +10,7 @@
  */
 import { decodeFrame, type Frame } from "./decode";
 import type {
-  CamsResponse, Fire, MeasuredResponse, Meta, PostRunResponse, RunStatus, SourceRequest,
+  CamsResponse, DataPollutant, Fire, MeasuredResponse, Meta, PostRunResponse, RunStatus, SourceRequest,
   SourceResponse, WindField,
 } from "./types";
 
@@ -143,12 +143,13 @@ export class ApiClient {
     return this.json(`${this.run(runId)}/cities/${encodeURIComponent(cityId)}/path/${hour}`, { signal });
   }
 
-  getMeasured(runId: string, cityId: string, signal?: AbortSignal): Promise<MeasuredResponse> {
-    return this.json(`${this.run(runId)}/cities/${encodeURIComponent(cityId)}/measured`, { signal });
+  /** CPCB city mean. PM2.5 sends no `pollutant` (the server default), so its URL is unchanged. */
+  getMeasured(runId: string, cityId: string, signal?: AbortSignal, pollutant: DataPollutant = "pm25"): Promise<MeasuredResponse> {
+    return this.json(`${this.run(runId)}/cities/${encodeURIComponent(cityId)}/measured`, { signal, query: pollutantQuery(pollutant) });
   }
 
-  getCams(runId: string, cityId: string, signal?: AbortSignal): Promise<CamsResponse> {
-    return this.json(`${this.run(runId)}/cities/${encodeURIComponent(cityId)}/cams`, { signal });
+  getCams(runId: string, cityId: string, signal?: AbortSignal, pollutant: DataPollutant = "pm25"): Promise<CamsResponse> {
+    return this.json(`${this.run(runId)}/cities/${encodeURIComponent(cityId)}/cams`, { signal, query: pollutantQuery(pollutant) });
   }
 
   postSource(runId: string, source: SourceRequest, signal?: AbortSignal): Promise<SourceResponse> {
@@ -160,6 +161,8 @@ export class ApiClient {
     return this.json(`${this.run(runId)}/sources/${encodeURIComponent(tagId)}`, { method: "DELETE", signal });
   }
 }
+
+const pollutantQuery = (p: DataPollutant) => (p === "pm25" ? undefined : `pollutant=${p}`);
 
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

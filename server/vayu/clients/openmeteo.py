@@ -245,19 +245,24 @@ def fetch_met(
     )
 
 
+CAMS_VARIABLES = {"pm25": "pm2_5", "pm10": "pm10"}
+
+
 def fetch_cams_pm25(
     lat: float, lon: float, start: datetime, hours: int,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] = time.sleep, *, pollutant: str = "pm25",
 ) -> np.ndarray:
-    """CAMS hourly PM2.5 (ug/m3) at one point for `hours` hours from `start`; NaN where null."""
+    """CAMS hourly PM2.5 (ug/m3) at one point for `hours` hours from `start`; NaN where null.
+    `pollutant="pm10"` gives PM10 instead."""
+    variable = CAMS_VARIABLES[pollutant]
     start = _utc(start)
     end = start + timedelta(hours=max(hours - 1, 0))
     params = {
-        "latitude": lat, "longitude": lon, "hourly": "pm2_5", "timezone": "GMT",
+        "latitude": lat, "longitude": lon, "hourly": variable, "timezone": "GMT",
         "start_date": start.date().isoformat(), "end_date": end.date().isoformat(),
     }
     settled = end < datetime.now(UTC) - ARCHIVE_LAG
     body = _cached_json(AIR_QUALITY_URL, params, None if settled else FORECAST_TTL_S, sleep)
     if not isinstance(body, dict) or "hourly" not in body:
         raise UpstreamError(SERVICE, "no hourly data in air-quality reply")
-    return _series(body["hourly"], "pm2_5", start, hours)
+    return _series(body["hourly"], variable, start, hours)

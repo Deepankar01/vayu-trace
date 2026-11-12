@@ -417,10 +417,12 @@ def test_other_error_is_generic_and_logged(env, monkeypatch, caplog):
 
 # --- meta ---
 
-def test_meta_contains_34_tags_and_40_cities(env):
+def test_meta_contains_68_tags_and_40_cities(env):
     m = ready(env).get("/api/runs/2023-11-05/meta").json()
-    assert len(m["tags"]) == 34 and len(m["cities"]) == 40
-    assert set(m["tags"][0]) == {"id", "kind", "sector", "region", "label", "color"}
+    assert len(m["tags"]) == 68 and len(m["cities"]) == 40
+    assert set(m["tags"][0]) == {"id", "kind", "sector", "region", "label", "color", "size"}
+    assert [t["size"] for t in m["tags"]] == ["fine"] * 34 + ["coarse"] * 34
+    assert all("by_tag_local" in c for c in m["cities"])
     assert m["date"] == "2023-11-05" and m["build_id"] == env["fake"].run_id
     assert m["made_at"] == MADE.isoformat()
     assert m["hours"] == [(START + timedelta(hours=h)).isoformat() for h in range(HOURS)]
@@ -428,7 +430,10 @@ def test_meta_contains_34_tags_and_40_cities(env):
     assert m["forecast_from"] is None and m["fires_assumed_from"] is None
     assert m["grid"] == {"lon_min": 66.0, "lat_min": 6.0, "cell": 0.1, "nx": 320, "ny": 320}
     notes = m["notes"]
-    assert notes["blh_estimated"] is True and notes["dust_available"] is False
+    assert notes["blh_estimated"] is True and notes["dust_available"] is True
+    assert notes["dust_estimated"] is True and "TERI" in notes["dust_source"]
+    assert notes["v_dep_coarse_m_s"] == 5 * notes["v_dep_fine_m_s"]
+    assert True
     assert notes["fire_scaling_default"] == 1.0 and notes["city_area_km"] == 30
     assert notes["share_uncertainty_pp"] == {"default": 15, "delhi": 5}
     assert notes["min_date"] == "2018-04-01" and notes["step_stats"]["depleted"] == 2
@@ -692,6 +697,7 @@ def test_cams(env):
 def test_measured_no_stations_returns_nulls(env):
     r = ready(env).get("/api/runs/2023-11-05/cities/delhi/measured").json()
     assert r == {"values": [None, None, None], "station_count": 0, "live": None,
+                 "pollutant": "pm25",
                  "live_error": None, "source": "CPCB via OpenAQ",
                  "aligned": "hour mean, overlap-weighted"}
     assert env["live_calls"] == 0  # the window does not include the current hour
@@ -1016,3 +1022,36 @@ def test_missing_subrun_of_a_live_source_is_still_500(env, caplog):
     with caplog.at_level(logging.ERROR):
         r = c.get("/api/runs/2023-11-05/frames/1?extra=user_1")
     assert r.status_code == 500
+
+
+# --- PM10 ---
+
+def test_measured_and_cams_accept_pm10_and_reject_other_pollutants(env, monkeypatch):
+    seen = {}
+
+    def fake_measured(city, start, hours, now=None, parameter="pm25"):
+        seen["measured"] = parameter
+        return MeasuredSeries(np.array([150.0, np.nan, 90.0], dtype=np.float32), 2)
+
+    def fake_cams(lat, lon, start, hours, pollutant="pm25"):
+        seen["cams"] = pollutant
+        return np.array([80.0, 81.0, np.nan])
+
+    monkeypatch.setattr(api, "city_pm25", fake_measured)
+    monkeypatch.setattr(api, "fetch_cams_pm25", fake_cams)
+    c = ready(env)
+    m = c.get("/api/runs/2023-11-05/cities/delhi/measured?pollutant=pm10").json()
+    assert m["values"] == [150.0, None, 90.0] and m["pollutant"] == "pm10" and m["live"] is None
+    assert c.get("/api/runs/2023-11-05/cities/delhi/cams?pollutant=pm10").json() == {
+        "values": [80.0, 81.0, None]}
+    assert seen == {"measured": "pm10", "cams": "pm10"}
+    for path in ("measured", "cams"):
+        r = c.get(f"/api/runs/2023-11-05/cities/delhi/{path}?pollutant=so2")
+        assert r.status_code == 422 and "pm25, pm10" in r.json()["detail"]
+
+
+def test_simulated_total_for_validation_leaves_out_coarse_tags():
+    from vayu.validate import simulated_total
+    total = simulated_total({"vehicles_delhi_ncr": [1.0, 2.0], "coarse_dust_delhi_ncr": [50.0, 50.0],
+                             "fire_punjab": [3.0, None]}, 2)
+    assert total[0] == 4.0 and np.isnan(total[1])

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import aqiCases from "./__fixtures__/aqi-cases.json";
-import { pm25ToAqi, rolling24h } from "./aqi";
+import { pm10ToAqi, pm25ToAqi, rolling24h } from "./aqi";
 
 describe("pm25ToAqi", () => {
   it("matches the CPCB breakpoint table", () => {
@@ -23,6 +23,35 @@ describe("pm25ToAqi", () => {
       if (c.aqi === "NaN") expect(got).toBeNaN();
       else expect(got).toBe(c.aqi as number); // same double operations as numpy.interp: identical
     }
+  });
+});
+
+describe("pm10ToAqi", () => {
+  it("matches the CPCB PM10 breakpoint table, linear inside a band", () => {
+    const table: [number, number][] = [[0, 0], [50, 50], [100, 100], [250, 200], [350, 300], [430, 400], [510, 500]];
+    for (const [pm, aqi] of table) expect(pm10ToAqi(pm)).toBeCloseTo(aqi, 10);
+    expect(pm10ToAqi(175)).toBeCloseTo(150, 10);
+  });
+
+  it("clamps at both ends and passes NaN through", () => {
+    expect(pm10ToAqi(-3)).toBe(0);
+    expect(pm10ToAqi(2000)).toBe(500);
+    expect(pm10ToAqi(NaN)).toBeNaN();
+  });
+
+  it("replays the Python reference values", () => {
+    expect(aqiCases.pm10_cases.length).toBeGreaterThan(10);
+    for (const c of aqiCases.pm10_cases) {
+      const raw = c.pm10 as number | string;
+      const pm = raw === "Infinity" ? Infinity : raw === "-Infinity" ? -Infinity : raw === "NaN" ? NaN : (raw as number);
+      const got = pm10ToAqi(pm);
+      if ((c.aqi as number | string) === "NaN") expect(got).toBeNaN();
+      else expect(got).toBe(c.aqi as number);
+    }
+  });
+
+  it("is a different scale from PM2.5: the same concentration reads lower as PM10", () => {
+    expect(pm10ToAqi(100)).toBeLessThan(pm25ToAqi(100));
   });
 });
 

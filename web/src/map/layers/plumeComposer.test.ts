@@ -24,6 +24,7 @@ describe("sameHourKey", () => {
     ["weights identity (even if equal)", { weights: { a: 1, b: 1 } }],
     ["baseline identity", { baseline: { a: 1, b: 1 } }],
     ["mode", { mode: "aqi" as const }],
+    ["pollutant", { pollutant: "pm10" as const }],
     ["staleness", { stale: true }],
   ])("changes with %s", (_n, change) => {
     expect(sameHourKey(base, { ...base, ...change })).toBe(false);
@@ -56,6 +57,26 @@ describe("PlumeComposer", () => {
     const frame = frameWith(10);
     const h = c.get({ hour: 0, build: "b", frame, weights: { a: 0.5, b: 1 }, baseline: { a: 1, b: 1 }, mode: "diff", stale: false });
     expect(h.value[0]).toBeCloseTo(-5, 2);
+  });
+
+  it("composes only the tags of the key's pollutant", () => {
+    const c = new PlumeComposer(GRID);
+    const n = NX * NY;
+    const frame = makeFrame(NX, NY, {
+      vehicles_delhi_ncr: new Float32Array(n).fill(10), coarse_vehicles_delhi_ncr: new Float32Array(n).fill(4),
+      user_1: new Float32Array(n).fill(1),
+    });
+    const weights = { vehicles_delhi_ncr: 2, coarse_vehicles_delhi_ncr: 2, user_1: 1 };
+    const at = (pollutant: "pm25" | "pm10" | "coarse") =>
+      c.get({ hour: 0, build: "b", frame, weights, baseline: null, mode: "pm25", pollutant, stale: false }).value[0];
+    expect(at("pm25")).toBeCloseTo(21, 2); // fine + the added source
+    expect(at("pm10")).toBeCloseTo(29, 2); // fine + coarse + the added source
+    expect(at("coarse")).toBeCloseTo(8, 2); // coarse only: added sources are fine
+    expect(c.composeCount).toBe(3); // a pollutant switch recomposes
+    // diff mode stays within the pollutant too
+    const base = { vehicles_delhi_ncr: 1, coarse_vehicles_delhi_ncr: 1, user_1: 0 };
+    const diff = c.get({ hour: 0, build: "b", frame, weights, baseline: base, mode: "diff", pollutant: "coarse", stale: false });
+    expect(diff.value[0]).toBeCloseTo(4, 2);
   });
 
   it("keeps only a few hours", () => {

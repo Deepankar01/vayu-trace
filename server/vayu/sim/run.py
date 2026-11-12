@@ -21,6 +21,12 @@ domain and the surviving fraction `frac`, never on mass. Scaling every emission 
 therefore gives the same trajectories, and fields scaled by that factor (exactly for powers of
 two, within float32 rounding otherwise). That is what lets the browser rescale sources.
 
+Made here. Every parcel remembers the cell it was released in. For each city the run also
+records, per tag and hour, the mass inside the city's 3 x 3 cell block and the part of it that
+was released inside that same block (`city_total`, `city_local` in each frame file, unsmoothed
+parcel sums with the frame's quadrature weights). Their ratio is the "made here" fraction that
+`receptors.city_series` applies to the city's concentration.
+
 Storage. Each run lives in its own directory `runs/{date}/{run_id}/`, written into a temporary
 sibling and renamed when complete, and never modified afterwards; `runs/{date}/current.json`
 names the current run and is replaced atomically. A `RunResult` held across a rebuild keeps
@@ -80,7 +86,7 @@ PARTICLES_REST_OF_INDIA = 400
 
 # Bump FORMAT_VERSION for any code change that alters results without changing a constant in
 # constants_snapshot (e.g. a new algorithm), so stored runs made by older code are not served.
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 # A run made this long after its window ended is final and never refreshed: the Open-Meteo
 # archive's own finality lag (FIRMS settles after 7 days, so it is covered too).
 FINAL_AFTER = ARCHIVE_FINAL_AFTER
@@ -158,7 +164,7 @@ def constants_snapshot(*, spinup_h: int | None = None,
     default_n, roi_n = particles or (PARTICLES_PER_TAG_HOUR, PARTICLES_REST_OF_INDIA)
     snap = {
         name: getattr(particles_module, name)
-        for name in ("DT_S", "K_H_M2_S", "V_DEP_M_S", "WASHOUT_A", "WASHOUT_B", "Z_RELAX_S",
+        for name in ("DT_S", "K_H_M2_S", "V_DEP_M_S", "V_DEP_COARSE_M_S", "WASHOUT_A", "WASHOUT_B", "Z_RELAX_S",
                      "MIN_MASS_FRACTION")
     }
     snap.update({
@@ -166,6 +172,9 @@ def constants_snapshot(*, spinup_h: int | None = None,
         for name in ("HAZE_GROWTH_COEFF", "HAZE_RH_CAP", "KERNEL_AGE_H", "KERNEL_HALF_WIDTH",
                      "FIRE_PEAK_HOUR_IST", "FIRE_SIGMA_H", "BIOMASS_KG_PER_MJ",
                      "EF_PM25_CROP_G_PER_KG", "EF_PM25_VEG_G_PER_KG", "CROP_STATES",
+                     "FIRE_COARSE_PER_PM25_CROP", "FIRE_COARSE_PER_PM25_VEG",
+                     "DUST_ROAD_PM10_KT", "DUST_ROAD_PM25_KT", "DUST_CONSTRUCTION_PM10_KT",
+                     "DUST_CONSTRUCTION_PM25_KT",
                      "FIRE_PROFILE_FLOOR", "WIND_BLEND_100M", "MET_STEP_DEG", "BLH_MIN_M",
                      "BLH_MAX_M", "BLH_NIGHT_BASE_M", "BLH_NIGHT_PER_MS", "BLH_DAY_BASE_M",
                      "BLH_DAY_PER_K", "BLH_PEAK_LOCAL_HOUR", "BLH_DAY_HALF_WIDTH_H")
@@ -186,6 +195,7 @@ def constants_snapshot(*, spinup_h: int | None = None,
         "inventory.RELEASE": inventory.RELEASE,
         "inventory.YEAR": inventory.YEAR,
         "inventory.EDGAR_SECTORS": inventory.EDGAR_SECTORS,
+        "inventory.LOADER_VERSION": inventory.INVENTORY_LOADER_VERSION,
         "inventory.notes": inventory.inventory_notes(),
         "SPINUP_H": SPINUP_H if spinup_h is None else spinup_h,
         "WINDOW_H": WINDOW_H,
@@ -254,10 +264,24 @@ def _weighted_median_by_cell(cell, value, weight, ncell: int) -> np.ndarray:
     return out
 
 
+@lru_cache(maxsize=1)
+def _city_blocks() -> tuple[np.ndarray, np.ndarray]:
+    """(member, any): member[i, cell] is True where flat `cell` lies in city i's 3 x 3 block
+    (the block `receptors.city_series` averages over); any[cell] is True for a cell in any
+    block."""
+    flat, ok = receptors._blocks(CITIES)
+    member = np.zeros((len(CITIES), NCELL), dtype=bool)
+    for i in range(len(CITIES)):
+        member[i, flat[i][ok[i]]] = True
+    return member, member.any(axis=0)
+
+
 class _HourMean:
     """Accumulates parcel samples within one hour and turns them into frame arrays."""
 
     def __init__(self, active: list[int]):
+        self.city_total = np.zeros((len(CITIES), len(TAGS)))
+        self.city_local = np.zeros((len(CITIES), len(TAGS)))
         self.slot = np.full(len(TAGS), -1, dtype=np.int64)
         self.slot[active] = np.arange(len(active))
         self.active = active
@@ -281,6 +305,21 @@ class _HourMean:
         self.fire_cell.append(cell[fire])
         self.fire_age.append(age_h[fire])
         self.fire_mass.append(mass[fire])
+        # per city: mass in its block, and the part released inside that block
+        member, any_block = _city_blocks()
+        near = any_block[cell]
+        if near.any():
+            c, c0, t, m = cell[near], p.cell0[ok][near], tag[near], mass[near]
+            origin_ok = c0 >= 0
+            c0 = np.where(origin_ok, c0, 0)
+            for i in range(len(CITIES)):
+                here = member[i, c]
+                if here.any():
+                    self.city_total[i] += np.bincount(t[here], weights=m[here],
+                                                      minlength=len(TAGS))
+                    local = here & origin_ok & member[i, c0]
+                    self.city_local[i] += np.bincount(t[local], weights=m[local],
+                                                      minlength=len(TAGS))
 
     def frame(self, met, k: int) -> dict[str, np.ndarray]:
         """Hour-mean dry PM2.5 per emitting tag (µg/m³, float32), plus `haze`, `fire_age_h` and
@@ -305,6 +344,8 @@ class _HourMean:
         ).reshape(NY, NX).astype(np.float32)
         out["haze"] = haze_factor(rh).astype(np.float32)
         out["missing"] = np.isnan(blh)
+        out["city_total"] = self.city_total
+        out["city_local"] = self.city_local
         return out
 
 
@@ -415,6 +456,16 @@ class RunResult:
     def haze(self, h: int) -> np.ndarray:
         """Hygroscopic growth factor f(RH) at cell centres (multiplies dry PM2.5 for "haze")."""
         return self._read(h, ["haze"])["haze"]
+
+    def city_local_fraction(self, h: int) -> np.ndarray | None:
+        """(ncity, ntag) fraction of the parcel mass in each city's 3 x 3 block that was released
+        inside that block, in CITIES and TAGS order; 0 where the block holds no parcel of the
+        tag. None for a run stored without it."""
+        z = self._read(h, ["city_total", "city_local"])
+        if len(z) != 2:
+            return None
+        total, local = z["city_total"], z["city_local"]
+        return np.where(total > 0, local / np.where(total > 0, total, 1.0), 0.0)
 
     def fire_age_h(self, h: int) -> np.ndarray:
         """Mass-weighted median age (hours) of fire parcels per cell over the hour's samples;

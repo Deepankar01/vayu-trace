@@ -56,7 +56,10 @@ def test_single_fire_mass(monkeypatch):
     em = fires.fire_emissions(START, 24, LATER)
     expected = SPREAD * C.EF_PM25_CROP_G_PER_KG
     assert total(em, "fire_punjab", 24) == pytest.approx(expected, rel=0.01)
-    assert em.tags == ["fire_punjab"]
+    assert em.tags == ["coarse_fire_punjab", "fire_punjab"]
+    # coarse smoke is a fixed multiple of the PM2.5 (Andreae 2019, crop residue)
+    assert total(em, "coarse_fire_punjab", 24) == pytest.approx(
+        total(em, "fire_punjab", 24) * C.FIRE_COARSE_PER_PM25_CROP)
 
 
 def test_two_satellites_average_not_sum(monkeypatch):
@@ -150,7 +153,7 @@ def test_tagged_by_state(monkeypatch):
             (*ODISHA, 10.0, "09:00", True, "VIIRS_SNPP")]
     patch(monkeypatch, {DAY: det(rows)})
     em = fires.fire_emissions(START, 24, LATER)
-    assert sorted(em.tags) == ["fire_other", "fire_punjab"]
+    assert sorted(em.tags) == ["coarse_fire_other", "coarse_fire_punjab", "fire_other", "fire_punjab"]
     assert total(em, "fire_punjab", 24) == pytest.approx(SPREAD * C.EF_PM25_CROP_G_PER_KG, rel=0.01)
     assert total(em, "fire_other", 24) == pytest.approx(SPREAD * C.EF_PM25_VEG_G_PER_KG, rel=0.01)
     ix, iy = cell_index(np.array([ODISHA[0]]), np.array([ODISHA[1]]))
@@ -169,7 +172,7 @@ def test_forecast_hours_use_three_day_mean_in_firefc_tags(monkeypatch):
     start = datetime(2025, 10, 31, 12, tzinfo=UTC)
     em = fires.fire_emissions(start, 48, now)  # 12 observed hours, then 36 forecast hours
     assert DAY not in calls
-    assert sorted(em.tags) == ["fire_punjab", "firefc_punjab"]
+    assert sorted(em.tags) == ["coarse_fire_punjab", "coarse_firefc_punjab", "fire_punjab", "firefc_punjab"]
     mean_peak = (10 + 20 + 30) / 3
     shares = fires.hourly_shares()
     # forecast hour index 12 is 2025-11-01 00:00 UTC; index 21 is 09:00 UTC
@@ -188,7 +191,7 @@ def test_forecast_hours_use_three_day_mean_in_firefc_tags(monkeypatch):
 def test_historical_replay_has_no_forecast_tags(monkeypatch):
     patch(monkeypatch, {DAY: det([(*LUDHIANA, 10.0, "09:00", True, "VIIRS_SNPP")])})
     em = fires.fire_emissions(START, 24, LATER)
-    assert not any(t.startswith("firefc_") for t in em.tags)
+    assert not any("firefc_" in t for t in em.tags)
 
 
 def test_no_detections_gives_zero_arrays(monkeypatch):
@@ -238,7 +241,9 @@ def test_fire_outside_india_inside_domain_is_emitted_as_other(monkeypatch):
             (*outside_domain, 10.0, "09:00", True, "VIIRS_SNPP")]
     patch(monkeypatch, {DAY: det(rows)})
     em = fires.fire_emissions(START, 24, LATER)
-    assert em.tags == ["fire_other"]
+    assert em.tags == ["coarse_fire_other", "fire_other"]
+    assert total(em, "coarse_fire_other", 24) == pytest.approx(
+        total(em, "fire_other", 24) * C.FIRE_COARSE_PER_PM25_VEG)
     assert total(em, "fire_other", 24) == pytest.approx(SPREAD * C.EF_PM25_VEG_G_PER_KG, rel=0.01)
     ix, iy = cell_index(np.array([kasur[0]]), np.array([kasur[1]]))
     assert set(at(em, "fire_other", 9)) == {(int(iy[0]), int(ix[0]))}

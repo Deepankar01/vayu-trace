@@ -410,3 +410,32 @@ def test_back_trajectory_time_varying_wind_and_offset():
     # hour outside the met range: just the city
     assert back_trajectory(met, np.zeros((NY, NX)), 80.0, 25.0, hour=60, hours_back=5,
                            met_offset_h=48.5) == [(80.0, 25.0)]
+
+
+# --- made here ---
+
+def test_local_by_tag_is_the_series_times_the_runs_local_fraction():
+    from vayu.cities import CITIES
+    from vayu.domain import TAGS
+    run = FakeRun(hours=2, tags=("vehicles_delhi_ncr", "coarse_dust_delhi_ncr"))
+    run.grids["vehicles_delhi_ncr"] = np.full((NY, NX), 10.0, np.float32)
+    run.grids["coarse_dust_delhi_ncr"] = np.full((NY, NX), 40.0, np.float32)
+    frac = np.zeros((len(CITIES), len(TAGS)))
+    ci = [c.id for c in CITIES].index("delhi")
+    col = {t.id: i for i, t in enumerate(TAGS)}
+    frac[ci, col["vehicles_delhi_ncr"]] = 0.25
+    frac[ci, col["coarse_dust_delhi_ncr"]] = 0.9
+    run.city_local_fraction = lambda h: frac
+    out = city_series(run, make_met(), 0.0)
+    delhi = out["delhi"]
+    np.testing.assert_allclose(delhi.by_tag["vehicles_delhi_ncr"], [10.0, 11.0])
+    np.testing.assert_allclose(delhi.local_by_tag["vehicles_delhi_ncr"], [2.5, 2.75])
+    np.testing.assert_allclose(delhi.local_by_tag["coarse_dust_delhi_ncr"], [36.0, 36.9])
+    np.testing.assert_allclose(out["mumbai"].local_by_tag["coarse_dust_delhi_ncr"], [0.0, 0.0])
+
+
+def test_local_by_tag_is_none_for_a_run_without_local_records():
+    assert city_series(FakeRun(hours=1), make_met(), 0.0)["delhi"].local_by_tag is None
+    run = FakeRun(hours=1)
+    run.city_local_fraction = lambda h: None  # stored before the record existed
+    assert city_series(run, make_met(), 0.0)["delhi"].local_by_tag is None

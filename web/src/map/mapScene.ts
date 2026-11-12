@@ -11,6 +11,7 @@ import type { Device, Texture } from "@luma.gl/core";
 import { errorMessage, isAbort } from "../api/client";
 import type { Fire, Meta } from "../api/types";
 import type { Weights } from "../lib/compose";
+import type { Pollutant } from "../lib/pollutant";
 import type { AppState, AppStore } from "../state/store";
 import { declutterLabels } from "./layers/labelDeclutter";
 import { LABEL_ALL_ZOOM, LABEL_NCR_ZOOM, cityLabel, labelPriority, showLabel, cityLayers, type CityDatum } from "./layers/cities";
@@ -36,10 +37,14 @@ export interface SceneEnv {
   viewVersion: number;
 }
 
-/** The plume mode the store's toggles ask for; null when no plume is drawn. */
-export function plumeModeOf(s: Pick<AppState, "layers" | "compareBaseline">): PlumeMode | null {
+/**
+ * The plume mode the store's toggles ask for; null when no plume is drawn. AQI follows the
+ * pollutant in view (PM2.5 or PM10 breakpoints). Coarse PM alone has no AQI, so the AQI toggle
+ * falls back to the concentration ramp there (the top bar and the legend say so).
+ */
+export function plumeModeOf(s: Pick<AppState, "layers" | "compareBaseline" | "pollutant">): PlumeMode | null {
   if (s.compareBaseline) return "diff";
-  if (s.layers.aqi) return "aqi";
+  if (s.layers.aqi) return s.pollutant === "coarse" ? "pm25" : s.pollutant === "pm10" ? "aqi10" : "aqi";
   if (s.layers.pm25) return "pm25";
   return null;
 }
@@ -191,12 +196,13 @@ export class MapScene {
   private updatePlume(s: AppState, meta: Meta, x: number, weights: Weights, env: SceneEnv): boolean {
     const mode = plumeModeOf(s);
     const baseline = mode === "diff" ? s.baselineWeights() : null;
+    const pollutant = s.pollutant;
     return this.slots.plume.update(
-      [mode, x, s.frameVersion, weights, baseline, meta.build_id, meta.grid, env.device, env.flatBeforeId],
+      [mode, pollutant, x, s.frameVersion, weights, baseline, meta.build_id, meta.grid, env.device, env.flatBeforeId],
       () => {
         if (!mode) return null;
         try {
-          const layer = this.drawPlume(meta, x, mode, weights, baseline, env);
+          const layer = this.drawPlume(meta, x, mode, pollutant, weights, baseline, env);
           this.onProblem("plume", null);
           return layer;
         } catch (e) {
@@ -208,7 +214,7 @@ export class MapScene {
   }
 
   private drawPlume(
-    meta: Meta, x: number, mode: PlumeMode, weights: Weights, baseline: Weights | null,
+    meta: Meta, x: number, mode: PlumeMode, pollutant: Pollutant, weights: Weights, baseline: Weights | null,
     env: SceneEnv,
   ): Layer | null {
     const frames = this.store.frames;
@@ -223,7 +229,7 @@ export class MapScene {
     const pair = playheadPair(x, meta.hours.length, (hh) => frames.get(hh) !== undefined);
     if (!pair) return null;
     const key = (hour: number): HourKey => ({
-      hour, build: meta.build_id, frame: frames.get(hour)!, weights, baseline, mode, stale: frames.isStale(hour),
+      hour, build: meta.build_id, frame: frames.get(hour)!, weights, baseline, mode, pollutant, stale: frames.isStale(hour),
     });
     const a = this.composer!.get(key(pair.a));
     const b = pair.b === null ? null : this.composer!.get(key(pair.b));

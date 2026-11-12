@@ -1,5 +1,6 @@
 /**
- * City markers and their labels: the name, then "model AQI N" and, when smoke is present or on its way,
+ * City markers and their labels: the name, then "model AQI N" (always the PM2.5-based AQI, from
+ * the fine tags, whichever pollutant the plume shows) and, when smoke is present or on its way,
  * " · smoke present · N h old" / " · arrives +N h" (from the weighted fire contribution and the
  * 15 ug/m3 threshold of `arrival`). Marker colour is the CPCB category of the AQI.
  */
@@ -10,6 +11,7 @@ import { pm25ToAqi, rolling24h } from "../../lib/aqi";
 import { arrival } from "../../lib/breakdown";
 import { aqiColor } from "../../lib/colors";
 import { cityTotals, type Weights } from "../../lib/compose";
+import { pickPollutant } from "../../lib/pollutant";
 import { hexToRgba } from "./rgba";
 
 export interface CityLabel {
@@ -64,7 +66,9 @@ const seriesMemo = new WeakMap<CityMeta, Series>();
 function seriesFor(city: CityMeta, weights: Weights): Series {
   const hit = seriesMemo.get(city);
   if (hit && hit.weights === weights) return hit;
-  const s = { weights, totals: cityTotals(city, weights, city.fire_age_h.length), fire: fireSeries(city, weights) };
+  // fine tags only: the label is PM2.5-based, and the coarse twins in `by_tag` are not PM2.5
+  const fine = { by_tag: pickPollutant(city.by_tag, "pm25") };
+  const s = { weights, totals: cityTotals(fine, weights, city.fire_age_h.length), fire: fireSeries(city, weights) };
   seriesMemo.set(city, s);
   return s;
 }

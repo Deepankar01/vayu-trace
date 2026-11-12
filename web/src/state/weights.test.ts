@@ -48,6 +48,32 @@ describe("selectWeights", () => {
     expect(w.vehicles_delhi_ncr).toBe(1);
   });
 
+  it("every coarse twin has exactly its fine tag's weight, under any scenario", () => {
+    const meta = makeMeta();
+    const scenarios: Partial<ScenarioState>[] = [
+      {},
+      { sliders: { vehicles: 1.5, industry: 0, dust: 2, residential: 0.25 } },
+      { regionScenario: { delhiOddEven: true, delhiConstructionBan: true }, sliders: { ...DEFAULT_SLIDERS, vehicles: 2 } },
+      { fireScaling: 3, firesContinue: false },
+    ];
+    for (const sc of scenarios) {
+      const w = selectWeights(base({ meta, ...sc }));
+      for (const t of meta.tags.filter((x) => x.size === "fine")) expect([t.id, w[`coarse_${t.id}`]]).toEqual([t.id, w[t.id]]);
+    }
+    const b = selectBaselineWeights({ meta });
+    for (const t of meta.tags.filter((x) => x.size === "fine")) expect(b[`coarse_${t.id}`]).toBe(b[t.id]);
+  });
+
+  it("the Delhi scenarios reach the coarse twins of the Delhi NCR tags, and only those", () => {
+    const w = selectWeights(base({ regionScenario: { delhiOddEven: true, delhiConstructionBan: true } }));
+    expect(w.coarse_vehicles_delhi_ncr).toBeCloseTo(0.7, 12);
+    expect(w.coarse_dust_delhi_ncr).toBe(0);
+    expect(w.coarse_vehicles_punjab).toBe(1);
+    // the dust slider at 0 switches the dust estimate off in both sizes
+    const off = selectWeights(base({ sliders: { ...DEFAULT_SLIDERS, dust: 0 } }));
+    expect([off.dust_delhi_ncr, off.coarse_dust_delhi_ncr]).toEqual([0, 0]);
+  });
+
   it("fire tags take fireScaling; firefc only while fires continue", () => {
     expect(selectWeights(base({ fireScaling: 2 }))).toMatchObject({ fire_punjab: 2, firefc_punjab: 2 });
     expect(selectWeights(base({ fireScaling: 2, firesContinue: false }))).toMatchObject({ fire_punjab: 2, firefc_punjab: 0 });
@@ -55,7 +81,7 @@ describe("selectWeights", () => {
 
   it("user sources are 1 while enabled and 0 when toggled off", () => {
     const meta = makeMeta();
-    meta.tags = [...meta.tags, { id: "user_1", kind: "user", sector: null, region: null, label: "x", color: "#999" }];
+    meta.tags = [...meta.tags, { id: "user_1", kind: "user", sector: null, region: null, label: "x", color: "#999", size: "fine" }];
     expect(selectWeights(base({ meta, userSources: [{ id: "user_1", enabled: true }] })).user_1).toBe(1);
     expect(selectWeights(base({ meta, userSources: [{ id: "user_1", enabled: false }] })).user_1).toBe(0);
   });
@@ -65,7 +91,7 @@ describe("selectBaselineWeights", () => {
   it("ignores every scenario control, uses the default fire scaling and drops user sources", () => {
     const meta = makeMeta();
     meta.notes.fire_scaling_default = 1.5;
-    meta.tags = [...meta.tags, { id: "user_1", kind: "user", sector: null, region: null, label: "x", color: "#999" }];
+    meta.tags = [...meta.tags, { id: "user_1", kind: "user", sector: null, region: null, label: "x", color: "#999", size: "fine" }];
     const w = selectBaselineWeights({ meta });
     expect(w).toMatchObject({
       fire_punjab: 1.5, firefc_punjab: 1.5, vehicles_delhi_ncr: 1, dust_delhi_ncr: 1, vehicles_punjab: 1, user_1: 0,

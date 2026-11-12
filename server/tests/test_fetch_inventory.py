@@ -24,7 +24,9 @@ def test_manifest_matches_data_notes_and_covers_every_code():
     notes = (SERVER.parent / "docs" / "data-notes.md").read_text()
     table = dict(re.findall(r"^  \| (\w+) \| `([0-9a-f]{64})` \|$", notes, re.MULTILINE))
     assert table == fi.SHA256
-    assert set(fi._codes()) == set(fi.SHA256)
+    pm10 = dict(re.findall(r"^  \| (\w+) \(PM10\) \| `([0-9a-f]{64})` \|$", notes, re.MULTILINE))
+    assert pm10 == fi.SHA256_PM10
+    assert set(fi._codes()) == {(c, p) for c in fi.SHA256 for p in ("PM2.5", "PM10")}
 
 
 def _zip(name: str, data: bytes) -> bytes:

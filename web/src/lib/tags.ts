@@ -4,6 +4,9 @@ export const REGIONS = ["delhi_ncr", "punjab", "haryana", "uttar_pradesh", "biha
 export const SECTORS = ["vehicles", "industry", "dust", "residential"] as const;
 export const FIRE_STATES = ["punjab", "haryana", "uttar_pradesh", "madhya_pradesh", "other"] as const;
 
+/** Coarse twins (the 2.5-10 um part of PM10) are named `coarse_` + the fine tag id. */
+export const COARSE_PREFIX = "coarse_";
+
 export interface CatalogueTag {
   id: string;
   kind: "fire" | "firefc" | "sector";
@@ -11,6 +14,8 @@ export interface CatalogueTag {
   region: string;
   label: string;
   color: string;
+  /** "fine": PM2.5. "coarse": the 2.5-10 um part of PM10. */
+  size: "fine" | "coarse";
 }
 
 const SECTOR_LABELS: Record<string, string> = {
@@ -50,11 +55,13 @@ export const DEFAULT_USER_LABEL = "Added source";
 
 function buildTags(): CatalogueTag[] {
   const tags: CatalogueTag[] = [];
-  for (const s of FIRE_STATES) tags.push({ id: `fire_${s}`, kind: "fire", sector: null, region: s, label: FIRE_LABEL, color: COLORS.fire });
-  for (const s of FIRE_STATES) tags.push({ id: `firefc_${s}`, kind: "firefc", sector: null, region: s, label: FIRE_LABEL, color: COLORS.fire });
+  for (const s of FIRE_STATES) tags.push({ id: `fire_${s}`, kind: "fire", sector: null, region: s, label: FIRE_LABEL, color: COLORS.fire, size: "fine" });
+  for (const s of FIRE_STATES) tags.push({ id: `firefc_${s}`, kind: "firefc", sector: null, region: s, label: FIRE_LABEL, color: COLORS.fire, size: "fine" });
   for (const sec of SECTORS)
     for (const reg of REGIONS)
-      tags.push({ id: `${sec}_${reg}`, kind: "sector", sector: sec, region: reg, label: SECTOR_LABELS[sec], color: COLORS[sec] });
+      tags.push({ id: `${sec}_${reg}`, kind: "sector", sector: sec, region: reg, label: SECTOR_LABELS[sec], color: COLORS[sec], size: "fine" });
+  // coarse twins come after every fine tag (as in domain.py), so fine tag indices never change
+  for (const t of [...tags]) tags.push({ ...t, id: COARSE_PREFIX + t.id, size: "coarse" });
   return tags;
 }
 

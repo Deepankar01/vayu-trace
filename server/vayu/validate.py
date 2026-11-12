@@ -18,6 +18,10 @@ measurements; the numbers are reported as they come out.
 
 Writes `data/validation.json` (served by GET /api/validation) and
 `docs/validation/{YYYY-MM}.md` at the repository root.
+
+With `--pollutant pm10` the same comparison is made for PM10 (simulated: fine plus coarse tags,
+which includes the ESTIMATED road and construction dust; measured: CPCB PM10; CAMS PM10) and
+written to `data/validation-pm10.json` and `docs/validation/{YYYY-MM}-pm10.md`.
 """
 import argparse
 import hashlib
@@ -109,11 +113,21 @@ def _mean_paired(a, b) -> float | None:
     return _f(a[ok].mean()) if ok.any() else None
 
 
-def simulated_total(by_tag: dict[str, list], hours: int) -> np.ndarray:
-    """Sum over tags of a city's series (lists with None for missing), NaN where any is None.
-    Tags absent from `by_tag` are all-zero series (the API omits those)."""
+PM10_NOTE = ("PM10 here is the model's PM2.5 plus its coarse (2.5-10 um) part. The largest coarse "
+             "source, road and construction dust, is an estimate (national totals spread by a "
+             "traffic proxy), not gridded data, so these figures test that estimate as much as "
+             "the transport.")
+
+
+def simulated_total(by_tag: dict[str, list], hours: int, pollutant: str = "pm25") -> np.ndarray:
+    """PM2.5: sum over the FINE tags of a city's series (lists with None for missing), NaN where
+    any is None. Tags absent from `by_tag` are all-zero series (the API omits those). `coarse_`
+    tags (the 2.5-10 um part of PM10) are not PM2.5 and are left out. With `pollutant="pm10"`
+    every tag is summed."""
     total = np.zeros(hours)
-    for values in by_tag.values():
+    for tag, values in by_tag.items():
+        if pollutant == "pm25" and tag.startswith("coarse_"):
+            continue
         total += np.array([np.nan if v is None else v for v in values], dtype=float)
     return total
 
@@ -383,7 +397,8 @@ def render_markdown(report: dict) -> str:
         "## Method",
         "",
         ("- **Simulated**: hour-mean dry PM2.5 that the model attributes to directly emitted "
-        "sources (EDGAR v8.1 sectors in India; satellite-detected fires anywhere in the model "
+        "sources (EDGAR v8.1 sectors in India; an ESTIMATED road and construction dust source "
+        "in India, spread from TERI 2016 national totals; satellite-detected fires anywhere in the model "
         "domain, 66-98°E, 6-38°N, including Pakistan, Nepal and Bangladesh), the value the app "
         "shows for a "
         "city: the mean over the 3 x 3 block of 0.1 degree cells around it (about 30 km), summed "
@@ -480,13 +495,16 @@ def _sim_for_run(run) -> dict[str, list]:
     return api._extras(api._S.build_for(run))["cities"]
 
 
-def collect(first: date, last: date, now: datetime, cities: list[City]) -> tuple[dict, list, list]:
+def collect(first: date, last: date, now: datetime, cities: list[City],
+            pollutant: str = "pm25") -> tuple[dict, list, list]:
     from vayu.clients.openaq import city_pm25
     from vayu.clients.openmeteo import fetch_cams_pm25
     from vayu.sim.run import run_date
 
     start = datetime.combine(first, datetime.min.time(), tzinfo=UTC)
     hours = ((last - first).days + 1) * 24
+    extra = {} if pollutant == "pm25" else {"parameter": pollutant}
+    cams_extra = {} if pollutant == "pm25" else {"pollutant": pollutant}
     sim = {c.id: np.full(hours, np.nan) for c in cities}
     runs, missing = [], []
     for run_day, seg_start, n in segments(first, last):
@@ -497,7 +515,7 @@ def collect(first: date, last: date, now: datetime, cities: list[City]) -> tuple
         off = run_offset(run, seg_start, n)
         at = int((seg_start - start) / timedelta(hours=1))
         for c in cities:
-            total = simulated_total(series[c.id]["by_tag"], run.hours)
+            total = simulated_total(series[c.id]["by_tag"], run.hours, pollutant)
             sim[c.id][at:at + n] = total[off:off + n]
         runs.append({"date": run_day.isoformat(), "build_id": run.run_id,
                      "made_at": run.made_at.isoformat() if run.made_at else None,
@@ -507,14 +525,15 @@ def collect(first: date, last: date, now: datetime, cities: list[City]) -> tuple
     for c in cities:
         print(f"measured + CAMS: {c.name}", file=sys.stderr)
         try:
-            m = _with_retries(f"OpenAQ {c.name}", lambda c=c: city_pm25(c, start, hours, now=now))
+            m = _with_retries(f"OpenAQ {c.name}", lambda c=c: city_pm25(c, start, hours, now=now, **extra))
             obs, stations = np.asarray(m.values, float), m.station_count
         except UpstreamError as exc:
             obs, stations = np.full(hours, np.nan), 0
             missing.append(f"{c.name}: measured data not fetched ({exc})")
         try:
             cams = np.asarray(_with_retries(
-                f"CAMS {c.name}", lambda c=c: fetch_cams_pm25(c.lat, c.lon, start, hours)), float)
+                f"CAMS {c.name}", lambda c=c: fetch_cams_pm25(c.lat, c.lon, start, hours, **cams_extra)),
+                float)
         except UpstreamError as exc:
             cams = np.full(hours, np.nan)
             missing.append(f"{c.name}: CAMS not fetched ({exc})")
@@ -529,25 +548,31 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("first", type=date.fromisoformat)
     parser.add_argument("last", type=date.fromisoformat)
+    parser.add_argument("--pollutant", choices=("pm25", "pm10"), default="pm25")
     args = parser.parse_args(argv)
     if args.last < args.first:
         parser.error("last must not be before first")
     now = datetime.now(UTC)
     cities = list(CITIES[:N_NORTHERN])
-    data, runs, missing = collect(args.first, args.last, now, cities)
+    data, runs, missing = collect(args.first, args.last, now, cities, args.pollutant)
     start = datetime.combine(args.first, datetime.min.time(), tzinfo=UTC)
     hours = ((args.last - args.first).days + 1) * 24
     report = build_report(data, start, hours,
                           pools={"all": [c.id for c in cities], "ncr": list(NCR)})
     report.update(provenance(runs))
     report["missing"] = missing
-    out_json = config.data_dir() / "validation.json"
+    report["pollutant"] = args.pollutant
+    suffix = "" if args.pollutant == "pm25" else f"-{args.pollutant}"
+    out_json = config.data_dir() / f"validation{suffix}.json"
     out_json.parent.mkdir(parents=True, exist_ok=True)
     from vayu.api import clean
     out_json.write_text(json.dumps(clean(report), allow_nan=False, indent=1))
-    out_md = REPO_ROOT / "docs" / "validation" / f"{args.first:%Y-%m}.md"
+    out_md = REPO_ROOT / "docs" / "validation" / f"{args.first:%Y-%m}{suffix}.md"
     out_md.parent.mkdir(parents=True, exist_ok=True)
-    out_md.write_text(render_markdown(report))
+    text = render_markdown(report)
+    if args.pollutant == "pm10":
+        text = text.replace("PM2.5", "PM10") + f"\n## PM10 caveat\n\n{PM10_NOTE}\n"
+    out_md.write_text(text)
     print(f"wrote {out_json} and {out_md}", file=sys.stderr)
     return 0
 
